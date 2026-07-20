@@ -1,0 +1,80 @@
+Adım Adım Yol Haritası
+Aşama 1 — Planlama & Mimari (1-2 gün)
+Endpoint listesini Excel/Notion'da çıkar (20+ endpoint, kategorilere göre).
+View'ları netleştir: Auth View, Chat/Monitoring View, Dashboard/Scoring View (3. master view).
+Go backend için klasör yapısını belirle (örn. cmd/, internal/handlers, internal/auth, internal/db).
+
+Aşama 2 — Backend (Go) (en kritik kısım, en çok zaman ayır)
+Framework seç: gin, fiber veya chi (Gin en yaygın, hızlı öğrenilir).
+Auth[8]: JWT tabanlı auth kur (access + refresh token).
+Config[2]: basit ayar endpoint'leri.
+Web MLC-LLM[6-8]: session/log/stats endpoint'leri — burada asıl amaç frontend'deki LLM etkileşimlerini backend'e kaydetmek.
+Common Services: /health, /version gibi.
+Veritabanı: Postgres (Render'da ücretsiz Postgres instance açabilirsin).
+Yerelde test et, Postman/Insomnia ile 20 endpoint'i doğrula.
+
+Aşama 3 — Frontend (NextJS + WebLLM)
+npx create-next-app ile başla.
+npm install @mlc-ai/web-llm kur.
+Gemma modelini (örn. gemma-2b-it-q4f16_1-MLC gibi bir varyant) WebLLM'in model kataloğundan seç — cihazda WebGPU desteği kontrolü yap (yoksa fallback mesajı göster).
+3 master view'ı oluştur: Auth (login/register form, backend'e bağlan), Chat/Monitoring (LLM ile konuş, çıktıyı göster + backend'e logla), Dashboard (Deci.Scoring sonuçlarını görselleştir).
+Backend'e axios/fetch ile bağlan (JWT token yönetimi).
+
+Aşama 4 — Deci.Scoring Mantığı
+Basit bir puanlama kuralı belirle (örn. yanıt uzunluğu, anahtar kelime kontrolü, format tutarlılığı, güvenlik filtresi gibi kriterler → 0-100 arası skor).
+Bu skoru backend'de hesapla veya frontend'de hesaplayıp backend'e gönder, dashboard'da göster.
+
+Aşama 5 — Deployment
+Backend → Render (Web Service olarak, Dockerfile veya native Go build).
+Frontend → Vercel (NextJS otomatik algılanır).
+Ortam değişkenlerini (API URL, DB bağlantısı, JWT secret) her iki platformda da ayarla.
+
+Aşama 6 — MCP Entegrasyonu
+Claude/Cursor gibi bir araçta Vercel MCP (https://mcp.vercel.com) ve Render MCP'yi bağla — bu sayede deployment, log görüntüleme gibi işlemleri AI ajanı üzerinden yapabilirsin (demo günü için de etkileyici olur).
+MF Academy MCP'nin nasıl bağlanacağını akademiden gelen dökümantasyondan kontrol et.
+
+Aşama 7 — Demo Hazırlığı
+Canlı linkleri test et (Vercel frontend ↔ Render backend CORS ayarlarını kontrol et — çoğu kişi burada takılır).
+Kısa bir demo akışı hazırla: Auth → Chat/LLM kullanımı → Scoring dashboard.
+
+___________________________________________________________________________________________________________
+Auth[8]:
+#	Method	Path	Açıklama
+1	POST	/api/auth/register	Yeni kullanıcı kaydı (email, şifre, isim)
+2	POST	/api/auth/login	Giriş, access + refresh token döner
+3	POST	/api/auth/logout	Refresh token'ı geçersiz kılar
+4	POST	/api/auth/refresh	Refresh token ile yeni access token alma
+5	POST	/api/auth/forgot-password	Şifre sıfırlama maili tetikler
+6	POST	/api/auth/reset-password	Token ile yeni şifre belirleme
+7	POST	/api/auth/verify-email	Email doğrulama linki/kodu
+8	GET	/api/auth/me	Giriş yapmış kullanıcının bilgisi (JWT korumalı)
+
+Config[2]:
+#	Method	Path	Açıklama
+9	GET	/api/config	Genel app ayarları (feature flag'ler, limitler)
+10	GET	/api/config/models	Desteklenen Gemma model varyantları + WebLLM'e verilecek model ID'leri
+
+Web MLC-LLM[8]:
+#	Method	Path	Açıklama
+11	POST	/api/llm/sessions	Yeni bir chat/monitoring oturumu başlat
+12	GET	/api/llm/sessions	Kullanıcının tüm oturumlarını listele
+13	GET	/api/llm/sessions/:id	Tek bir oturumun detayı
+14	DELETE	/api/llm/sessions/:id	Oturumu sil
+15	POST	/api/llm/sessions/:id/messages	Tarayıcıda üretilen prompt+response'u logla (raw output burada kaydedilir)
+16	GET	/api/llm/sessions/:id/messages	Oturuma ait mesaj geçmişini getir
+17	POST	/api/llm/sessions/:id/score	Bir mesaj/oturum için Deci.Score hesapla ve kaydet
+18	GET	/api/llm/sessions/:id/score	Hesaplanmış skoru getir
+
+Common Services[4]:
+#	Method	Path	Açıklama
+19	GET	/api/health	Servisin ayakta olduğunu doğrula (Render health check için de kullanılır)
+20	GET	/api/version	Backend versiyon/build bilgisi
+21	GET	/api/stats/dashboard	Genel kullanım istatistikleri (toplam oturum, ortalama skor vb.) — Dashboard view'ının verisi burası
+22	GET	/api/stats/me	Giriş yapmış kullanıcıya özel istatistik
+
+_________________________________________________________________________________________
+Database:
+users (id, email, password_hash, name, email_verified, created_at)
+llm_sessions (id, user_id, model_name, created_at, updated_at)
+llm_messages (id, session_id, role, content, raw_output, score, scored_at, created_at)
+llm_scores: id, message_id, score, criteria_json, created_at)
