@@ -46,17 +46,44 @@ func (h *CommonHandler) Version(c *gin.Context) {
 // Dashboard view'ının besleneceği genel (tüm sistem) istatistikler.
 
 func (h *CommonHandler) DashboardStats(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "yetkisiz erişim"})
+		return
+	}
+
+	uid := userID.(uuid.UUID)
 	var sessionCount, messageCount int64
 	var avgScore float64
 
-	h.DB.Table("llm_sessions").Count(&sessionCount)
-	h.DB.Table("llm_messages").Count(&messageCount)
-	h.DB.Table("llm_scores").Select("COALESCE(AVG(score), 0)").Scan(&avgScore)
+	h.DB.Table("llm_sessions").Where("user_id = ?", uid).Count(&sessionCount)
+	h.DB.Table("llm_messages").Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").Where("llm_sessions.user_id = ?", uid).Count(&messageCount)
+	h.DB.Table("llm_scores").Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").Where("llm_sessions.user_id = ?", uid).Select("COALESCE(AVG(score), 0)").Scan(&avgScore)
+
+	var sessions []struct {
+		ID           string  `json:"id"`
+		Title        string  `json:"title"`
+		ModelName    string  `json:"model_name"`
+		AverageScore float64 `json:"average_score"`
+	}
+
+	err := h.DB.Table("llm_sessions as s").
+		Select("s.id, s.title, s.model_name, COALESCE(AVG(ls.score), 0) as average_score").
+		Where("s.user_id = ?", uid).
+		Joins("LEFT JOIN llm_messages as m ON m.session_id = s.id").
+		Joins("LEFT JOIN llm_scores as ls ON ls.message_id = m.id").
+		Group("s.id, s.title, s.model_name").
+		Order("s.created_at desc").
+		Scan(&sessions).Error
+	if err != nil {
+		sessions = nil
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"total_sessions": sessionCount,
 		"total_messages": messageCount,
 		"average_score":  avgScore,
+		"sessions":       sessions,
 	})
 }
 

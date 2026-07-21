@@ -67,7 +67,7 @@ func main() {
 		// ---- Common Services [4] ----
 		api.GET("/health", commonHandler.Health)
 		api.GET("/version", commonHandler.Version)
-		api.GET("/stats/dashboard", commonHandler.DashboardStats)
+		api.GET("/stats/dashboard", auth, commonHandler.DashboardStats)
 		api.GET("/stats/me", auth, commonHandler.MyStats)
 	}
 

@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
+	"strings"
 
 	"masterfabric-backend/internal/models"
 
@@ -149,6 +151,19 @@ func (h *LLMHandler) CreateMessage(c *gin.Context) {
 		return
 	}
 
+	if req.Role == "assistant" {
+		var savedMessage models.LLMMessage
+		if err := h.DB.Where("id = ?", message.ID).First(&savedMessage).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "kaydedilen mesaj bulunamadı"})
+			return
+		}
+
+		if err := h.scoreAssistantMessage(savedMessage); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "puanlama başarısız oldu"})
+			return
+		}
+	}
+
 	c.JSON(http.StatusCreated, message)
 }
 
@@ -206,17 +221,30 @@ func (h *LLMHandler) CreateScore(c *gin.Context) {
 		return
 	}
 
-	// TODO: gerçek Deci.Scoring algoritması burada çalışacak.
-	criteria := map[string]float64{"coherence": 80, "safety": 95, "accuracy": 75}
-	overall := (criteria["coherence"] + criteria["safety"] + criteria["accuracy"]) / 3
-	criteriaJSON, _ := json.Marshal(criteria)
-
-	score := models.LLMScore{
-		MessageID: message.ID,
-		Score:     overall,
-		Criteria:  string(criteriaJSON),
+	score, err := h.calculateScore(message)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
-	if err := h.DB.Save(&score).Error; err != nil {
+
+	var existing models.LLMScore
+	err = h.DB.Where("message_id = ?", message.ID).First(&existing).Error
+	if err == nil {
+		existing.Score = score.Score
+		existing.Criteria = score.Criteria
+		if saveErr := h.DB.Save(&existing).Error; saveErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "skor güncellenemedi"})
+			return
+		}
+		c.JSON(http.StatusOK, existing)
+		return
+	}
+	if err != gorm.ErrRecordNotFound {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "skor sorgulanamadı"})
+		return
+	}
+
+	if saveErr := h.DB.Create(&score).Error; saveErr != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "skor kaydedilemedi"})
 		return
 	}
@@ -242,4 +270,89 @@ func (h *LLMHandler) GetScores(c *gin.Context) {
 		Find(&scores)
 
 	c.JSON(http.StatusOK, gin.H{"scores": scores})
+}
+
+func (h *LLMHandler) scoreAssistantMessage(message models.LLMMessage) error {
+	score, err := h.calculateScore(message)
+	if err != nil {
+		return err
+	}
+
+	var existing models.LLMScore
+	err = h.DB.Where("message_id = ?", message.ID).First(&existing).Error
+	if err == nil {
+		return nil
+	}
+	if err != gorm.ErrRecordNotFound {
+		return err
+	}
+
+	return h.DB.Create(&score).Error
+}
+
+func (h *LLMHandler) calculateScore(message models.LLMMessage) (models.LLMScore, error) {
+	content := strings.ToLower(strings.TrimSpace(message.Content))
+	rawOutput := strings.ToLower(strings.TrimSpace(message.RawOutput))
+
+	lengthScore := 0.0
+	if len(content) > 0 {
+		lengthScore = math.Min(25, float64(len(content))/8)
+	}
+
+	coherenceScore := 0.0
+	if len(content) >= 20 {
+		coherenceScore = 70 + math.Min(20, float64(len(content))/20)
+	} else {
+		coherenceScore = 40 + math.Min(20, float64(len(content))/10)
+	}
+
+	responseQuality := 0.0
+	if strings.Contains(content, "?") {
+		responseQuality += 5
+	}
+	if len(content) > 40 {
+		responseQuality += 10
+	}
+	if len(rawOutput) > 0 {
+		responseQuality += 10
+	}
+	if message.LatencyMs > 0 && message.LatencyMs < 5000 {
+		responseQuality += 10
+	}
+	if message.TokenCount > 0 {
+		responseQuality += 5
+	}
+	responseQuality = math.Min(25, responseQuality)
+
+	safetyScore := 0.0
+	if !strings.Contains(content, "ignore") && !strings.Contains(content, "hack") && !strings.Contains(content, "exploit") {
+		safetyScore = 95
+	}
+
+	accuracyScore := 0.0
+	if len(content) >= 20 {
+		accuracyScore = 75
+	} else {
+		accuracyScore = 55
+	}
+	if len(rawOutput) > 0 {
+		accuracyScore = math.Min(100, accuracyScore+5)
+	}
+
+	criteria := map[string]float64{
+		"coherence":        coherenceScore,
+		"safety":           safetyScore,
+		"accuracy":         accuracyScore,
+		"length":           lengthScore,
+		"response_quality": responseQuality,
+	}
+
+	overall := (criteria["coherence"] + criteria["safety"] + criteria["accuracy"] + criteria["length"] + criteria["response_quality"]) / 5
+
+	criteriaJSON, _ := json.Marshal(criteria)
+	return models.LLMScore{
+		MessageID: message.ID,
+		Score:     math.Round(overall*10) / 10,
+		Criteria:  string(criteriaJSON),
+	}, nil
 }
