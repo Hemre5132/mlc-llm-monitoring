@@ -1,38 +1,91 @@
 "use client";
 
-import { useState, useEffect } from "react";
-// llm.service.js dosyasını içe aktarıyoruz. (Yolun projedeki yerine göre gerekirse @/services/... yapabilirsin)
-import { initLLMEngine, generateResponse } from "@/services/llm.service";
+import { useEffect, useState } from "react";
+import {
+  createSession,
+  generateResponse,
+  getMessages,
+  initLLMEngine,
+  logMessage,
+} from "@/services/llm.service";
+
+const SESSION_STORAGE_KEY = "currentSessionId";
+const DEFAULT_ASSISTANT_MESSAGE = {
+  role: "assistant",
+  content: "Hi! I am your local AI assistant running directly on your device. How can I help you today?",
+};
+
+function estimateTokenCount(text) {
+  if (!text) return 0;
+  return Math.max(1, Math.ceil(text.trim().split(/\s+/).filter(Boolean).length));
+}
 
 export default function ChatPage() {
   const [isWebGPUSupported, setIsWebGPUSupported] = useState(null);
-  
-  // Model yükleme durumları
   const [isEngineReady, setIsEngineReady] = useState(false);
   const [loadingText, setLoadingText] = useState("Model başlatılıyor...");
-  const [isGenerating, setIsGenerating] = useState(false); // Yanıt akarken butonu kilitlemek için
-
-  const [messages, setMessages] = useState([
-    { role: "assistant", content: "Merhaba! Ben cihazınızda çalışan yerel yapay zekayım. Size nasıl yardımcı olabilirim?" },
-  ]);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [sessionId, setSessionId] = useState(null);
+  const [messages, setMessages] = useState([DEFAULT_ASSISTANT_MESSAGE]);
   const [input, setInput] = useState("");
 
-  // 1. Adım: Sayfa açıldığında WebGPU kontrolü yap
-  useEffect(() => {
-    if ("gpu" in navigator) {
-      setIsWebGPUSupported(true);
-    } else {
-      setIsWebGPUSupported(false);
+  const startNewChat = async () => {
+    try {
+      const session = await createSession({ model_name: "gemma-2b-it-q4f16_1-MLC" });
+      const nextSessionId = session.id || session.ID;
+
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(SESSION_STORAGE_KEY, nextSessionId);
+      }
+
+      setSessionId(nextSessionId);
+      setMessages([DEFAULT_ASSISTANT_MESSAGE]);
+      setInput("");
+    } catch (error) {
+      console.error("Yeni sohbet başlatılamadı:", error);
     }
+  };
+
+  useEffect(() => {
+    if ("gpu" in navigator) setIsWebGPUSupported(true);
+    else setIsWebGPUSupported(false);
+
+    const initChat = async () => {
+      try {
+        const storedSessionId =
+          typeof window !== "undefined" ? window.localStorage.getItem(SESSION_STORAGE_KEY) : null;
+
+        if (storedSessionId) {
+          setSessionId(storedSessionId);
+
+          const previousMessages = await getMessages(storedSessionId);
+          if (Array.isArray(previousMessages) && previousMessages.length > 0) {
+            setMessages(previousMessages);
+          }
+          return;
+        }
+
+        const session = await createSession({ model_name: "gemma-2b-it-q4f16_1-MLC" });
+        const sId = session.id || session.ID;
+
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(SESSION_STORAGE_KEY, sId);
+        }
+
+        setSessionId(sId);
+      } catch (error) {
+        console.error("Oturum başlatılamadı:", error);
+      }
+    };
+
+    initChat();
   }, []);
 
-  // 2. Adım: WebGPU varsa modeli indirmeye/yüklemeye başla
   useEffect(() => {
     if (isWebGPUSupported) {
       const loadModel = async () => {
         try {
           await initLLMEngine((progress) => {
-            // progress.text içinde "Fetching... %45" gibi MLC'nin kendi logları vardır
             setLoadingText(progress.text);
           });
           setIsEngineReady(true);
@@ -45,42 +98,59 @@ export default function ChatPage() {
     }
   }, [isWebGPUSupported]);
 
-  // 3. Adım: Mesaj Gönderme ve Yanıtı Ekrana Yazdırma (Streaming)
   async function handleSend() {
-    // Boş mesaj atılmasını, modelin hazır olmamasını veya halihazırda cevap yazıyor olmasını engelle
     if (!input.trim() || !isEngineReady || isGenerating) return;
 
     const userText = input;
+    const startedAt = Date.now();
     setInput("");
     setIsGenerating(true);
 
-    // Ekrana kullanıcının mesajını ve asistanın içi boş "yükleniyor" mesajını ekle
     const newMessages = [
       ...messages,
       { role: "user", content: userText },
-      { role: "assistant", content: "..." }, // Gelecek olan yanıt burayı dolduracak
+      { role: "assistant", content: "..." },
     ];
     setMessages(newMessages);
 
-    try {
-      // Modele göndereceğimiz mesaj geçmişi (son eklediğimiz boş asistan mesajını hariç tutuyoruz)
-      const messagesForModel = newMessages.slice(0, -1);
+    if (sessionId) {
+      try {
+        await logMessage(sessionId, {
+          role: "user",
+          content: userText,
+          latency_ms: 0,
+          token_count: estimateTokenCount(userText),
+        });
+      } catch (error) {
+        console.error("Kullanıcı mesajı kaydedilemedi", error);
+      }
+    }
 
-      // Modeli çağırıyoruz. streamCallback fonksiyonu her yeni kelimede tetiklenir
-      await generateResponse(messagesForModel, (currentText) => {
+    try {
+      const messagesForModel = newMessages.slice(0, -1);
+      const finalReply = await generateResponse(messagesForModel, (currentText) => {
         setMessages((prev) => {
           const updatedMessages = [...prev];
-          // Son sıradaki asistan mesajının içeriğini güncelliyoruz (daktilo efekti)
           updatedMessages[updatedMessages.length - 1].content = currentText;
           return updatedMessages;
         });
       });
 
-      // TODO: İleride logMessage(sessionId, {...}) backend çağrısını buraya ekleyeceğiz
-
+      if (sessionId) {
+        try {
+          await logMessage(sessionId, {
+            role: "assistant",
+            content: finalReply,
+            raw_output: finalReply,
+            latency_ms: Date.now() - startedAt,
+            token_count: estimateTokenCount(finalReply),
+          });
+        } catch (error) {
+          console.error("Asistan mesajı kaydedilemedi", error);
+        }
+      }
     } catch (error) {
       console.error("Yanıt üretilirken hata:", error);
-      // Hata olursa ekrandaki "..." kısmını hata mesajıyla değiştir
       setMessages((prev) => {
         const updated = [...prev];
         updated[updated.length - 1].content = "Yanıt oluşturulurken bir hata meydana geldi.";
@@ -90,8 +160,6 @@ export default function ChatPage() {
       setIsGenerating(false);
     }
   }
-
-  // --- ARAYÜZ (RENDER) BÖLÜMÜ ---
 
   if (isWebGPUSupported === null) {
     return (
@@ -114,12 +182,20 @@ export default function ChatPage() {
 
   return (
     <div className="mx-auto flex h-[80vh] max-w-2xl flex-col rounded-xl border bg-white shadow-sm">
-      
-      {/* Model Yükleme / Başarı Bildirimi */}
-      <div className={`p-3 text-center text-xs font-medium border-b ${
-        isEngineReady ? "bg-green-50 text-green-700 border-green-100" : "bg-blue-50 text-blue-700 border-blue-100 animate-pulse"
-      }`}>
-        {isEngineReady ? "✓ Yerel AI Motoru Hazır" : loadingText}
+      <div className="flex items-center justify-between border-b p-3">
+        <div
+          className={`flex-1 text-center text-xs font-medium ${
+            isEngineReady ? "text-green-700" : "text-blue-700 animate-pulse"
+          }`}
+        >
+          {isEngineReady ? "✓ Local AI Engine Ready" : loadingText}
+        </div>
+        <button
+          onClick={startNewChat}
+          className="ml-2 rounded-md bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-200 transition-colors"
+        >
+          + New Chat
+        </button>
       </div>
 
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
@@ -136,14 +212,14 @@ export default function ChatPage() {
           </div>
         ))}
       </div>
-      
+
       <div className="flex gap-2 border-t p-3 bg-gray-50 rounded-b-xl">
         <input
           className="flex-1 rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 disabled:bg-gray-200"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleSend()}
-          placeholder={isEngineReady ? "Mesajınızı yazın..." : "Model yükleniyor, lütfen bekleyin..."}
+          placeholder={isEngineReady ? "Type your message..." : "Loading model, please wait..."}
           disabled={!isEngineReady || isGenerating}
         />
         <button
@@ -151,7 +227,7 @@ export default function ChatPage() {
           disabled={!isEngineReady || isGenerating}
           className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:bg-indigo-400 disabled:cursor-not-allowed"
         >
-          {isGenerating ? "Yazıyor..." : "Gönder"}
+          {isGenerating ? "Writing..." : "Send"}
         </button>
       </div>
     </div>

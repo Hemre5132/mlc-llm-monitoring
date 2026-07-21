@@ -3,7 +3,7 @@ import { CreateMLCEngine } from "@mlc-ai/web-llm";
 
 // --- WEBLLM AYARLARI ---
 let engine = null;
-const SELECTED_MODEL = "Llama-3.2-1B-Instruct-q4f16_1-MLC";
+const SELECTED_MODEL = "Qwen2.5-1.5B-Instruct-q4f16_1-MLC";
 
 // --------------------------------------------------
 // 1. BACKEND (VERİTABANI) FONKSİYONLARI
@@ -47,16 +47,22 @@ export async function initLLMEngine(progressCallback) {
 }
 
 export async function generateResponse(messages, streamCallback) {
-  if (!engine) throw new Error("Motor henüz başlatılmadı!");
+  if (!engine) {
+    console.warn("Motor henüz hazır değil, bekleniyor...");
+    // Küçük bir bekleme süresi veya doğrudan hata fırlatma
+    throw new Error("Engine is not initialized yet.");
+  }
 
   // 1. DOKUNUŞ: SİSTEM KOMUTU (Sadece İngilizce)
   // Kullanıcının mesajlarının en başına gizli bir "system" mesajı ekleyerek modeli yönlendiriyoruz.
+  const cleanMessages = messages.filter(m => m.role !== 'system');
+
   const formattedMessages = [
     { 
       role: "system", 
       content: "You are a highly intelligent and helpful AI assistant. You MUST always respond strictly in English, regardless of the language the user uses to ask the question. Be concise and accurate." 
     },
-    ...messages // Senin arayüzden gönderdiğin mesaj geçmişi bunun altına ekleniyor
+    ...cleanMessages // Senin arayüzden gönderdiğin mesaj geçmişi bunun altına ekleniyor
   ];
 
   // Modele mesajları gönder ve stream (akan) yanıt iste
@@ -78,4 +84,14 @@ export async function generateResponse(messages, streamCallback) {
   }
 
   return fullReply;
+}
+
+export async function getMessages(sessionId) {
+  const { data } = await api.get(`/llm/sessions/${sessionId}/messages`);
+
+  const rawMessages = data?.messages ?? [];
+  return rawMessages.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }));
 }
