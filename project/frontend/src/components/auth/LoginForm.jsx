@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Input from "@/components/ui/Input";
 import Button from "@/components/ui/Button";
-import { loginUser, getCurrentUser } from "@/services/auth.service";
+import { loginUser } from "@/services/auth.service";
 import { useAuth } from "@/hooks/useAuth";
 
 export default function LoginForm() {
@@ -24,12 +24,20 @@ export default function LoginForm() {
     setError("");
     setIsLoading(true);
     try {
-      await loginUser(form);
-      const me = await getCurrentUser();
-      setUser(me);
+      const loginData = await loginUser(form);
+      if (!loginData?.user) {
+        throw new Error("Login response did not include a user");
+      }
+      setUser(loginData.user);
       router.push("/dashboard");
     } catch (err) {
-      setError(err.response?.data?.message || "Giriş başarısız. Bilgilerinizi kontrol edin.");
+      const apiError = err.response?.data?.error || err.response?.data?.message;
+      const networkError = err.code === "ECONNABORTED" || !err.response;
+      setError(
+        networkError
+          ? "Sunucuya bağlanılamadı. Backend servisinin çalıştığını kontrol edin."
+          : apiError || "Giriş başarısız. Bilgilerinizi kontrol edin."
+      );
     } finally {
       setIsLoading(false);
     }

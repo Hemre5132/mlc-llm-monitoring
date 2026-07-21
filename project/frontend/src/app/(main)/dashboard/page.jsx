@@ -1,45 +1,45 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { listSessions } from "@/services/llm.service";
+import { backfillScores, listSessions } from "@/services/llm.service";
 import { getDashboardStats, getMyStats } from "@/services/stats.service";
 
 export default function DashboardPage() {
   const [stats, setStats] = useState(null);
   const [myStats, setMyStats] = useState(null);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     const loadStats = async () => {
       try {
+        await backfillScores();
+
         const [dashboardData, personalData, sessionsData] = await Promise.all([
           getDashboardStats(),
           getMyStats(),
           listSessions(),
         ]);
 
-        const sessionList = Array.isArray(sessionsData?.sessions)
-          ? sessionsData.sessions
-          : [];
+        const scoreBySessionId = new Map(
+          (dashboardData.sessions || []).map((session) => [String(session.id), session])
+        );
+        const sessions = (sessionsData.sessions || []).map((session) => ({
+          ...session,
+          ...(scoreBySessionId.get(String(session.id)) || {}),
+        }));
 
-        const dashboardSessions = Array.isArray(dashboardData?.sessions) && dashboardData.sessions.length > 0
-          ? dashboardData.sessions
-          : sessionList.map((session) => ({
-              id: session.id,
-              title: session.title,
-              model_name: session.model_name,
-              average_score: 0,
-            }));
-
-        setStats({ ...dashboardData, sessions: dashboardSessions });
+        setStats({ ...dashboardData, sessions });
         setMyStats(personalData);
       } catch (error) {
         console.error("Dashboard verileri yüklenemedi", error);
+        setError("Dashboard verileri alınamadı. Backend bağlantısını ve oturumunuzu kontrol edin.");
       }
     };
 
     loadStats();
   }, []);
 
+  if (error) return <p className="p-8 text-red-600">{error}</p>;
   if (!stats) return <p className="p-8">Yükleniyor...</p>;
 
   const sessionRows = Array.isArray(stats.sessions)
@@ -57,19 +57,25 @@ export default function DashboardPage() {
         </div>
         <div className="rounded-xl border bg-white p-4">
           <p className="text-sm text-gray-500">Ortalama Skor</p>
-          <p className="text-2xl font-bold">{Number(stats.average_score ?? 0).toFixed(1)}/100</p>
+          <p className="text-2xl font-bold">
+            {stats.scored_messages > 0 ? `${Number(stats.average_score).toFixed(1)}/100` : "Henüz skor yok"}
+          </p>
         </div>
       </div>
 
       <div className="mb-6 rounded-xl border bg-white p-4">
         <p className="text-sm text-gray-500">Kişisel Ortalama</p>
-        <p className="text-2xl font-bold">{Number(myStats?.average_score ?? 0).toFixed(1)}/100</p>
+        <p className="text-2xl font-bold">
+          {myStats?.scored_messages > 0
+            ? `${Number(myStats.average_score).toFixed(1)}/100`
+            : "Henüz skor yok"}
+        </p>
       </div>
 
       <div className="space-y-3">
         {sessionRows.length === 0 ? (
           <div className="rounded-lg border bg-white p-4 text-sm text-gray-500">
-            Henüz skorlanmış sohbet bulunmuyor.
+            Henüz sohbet bulunmuyor.
           </div>
         ) : (
           sessionRows.map((session) => (
@@ -82,7 +88,9 @@ export default function DashboardPage() {
                 <p className="text-xs text-gray-500">{session.model_name || "Model"}</p>
               </div>
               <span className="font-semibold text-indigo-600">
-                {Number(session.average_score ?? session.AverageScore ?? 0).toFixed(1)}/100
+                {session.scored_messages > 0
+                  ? `${Number(session.average_score ?? session.AverageScore).toFixed(1)}/100`
+                  : "Henüz skorlanmadı"}
               </span>
             </div>
           ))

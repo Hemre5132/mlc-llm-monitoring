@@ -25,6 +25,11 @@ export async function logMessage(sessionId, payload) {
   return data;
 }
 
+export async function backfillScores() {
+  const { data } = await api.post("/llm/scores/backfill");
+  return data;
+}
+
 // --------------------------------------------------
 // 2. YEREL YAPAY ZEKA (WEBLLM) FONKSİYONLARI
 // --------------------------------------------------
