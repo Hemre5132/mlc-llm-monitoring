@@ -1,18 +1,23 @@
 "use client";
 
 import { useState, useEffect } from "react";
+// llm.service.js dosyasını içe aktarıyoruz. (Yolun projedeki yerine göre gerekirse @/services/... yapabilirsin)
+import { initLLMEngine, generateResponse } from "@/services/llm.service";
 
 export default function ChatPage() {
-  // WebGPU destek durumunu tutacağımız state
   const [isWebGPUSupported, setIsWebGPUSupported] = useState(null);
   
-  // Claude'un verdiği sohbet state'leri
+  // Model yükleme durumları
+  const [isEngineReady, setIsEngineReady] = useState(false);
+  const [loadingText, setLoadingText] = useState("Model başlatılıyor...");
+  const [isGenerating, setIsGenerating] = useState(false); // Yanıt akarken butonu kilitlemek için
+
   const [messages, setMessages] = useState([
-    { role: "assistant", content: "Merhaba! WebGPU taramasını geçtin. Ben şu an mock (sahte) asistanım." },
+    { role: "assistant", content: "Merhaba! Ben cihazınızda çalışan yerel yapay zekayım. Size nasıl yardımcı olabilirim?" },
   ]);
   const [input, setInput] = useState("");
 
-  // Sayfa açıldığında WebGPU kontrolü yap
+  // 1. Adım: Sayfa açıldığında WebGPU kontrolü yap
   useEffect(() => {
     if ("gpu" in navigator) {
       setIsWebGPUSupported(true);
@@ -21,21 +26,73 @@ export default function ChatPage() {
     }
   }, []);
 
-  function handleSend() {
-    if (!input.trim()) return;
-    
-    // TODO: llm.service.js -> logMessage() ile backend'e logla
-    // TODO: @mlc-ai/web-llm entegrasyonu burada devreye girecek
-    
-    setMessages((prev) => [
-      ...prev,
-      { role: "user", content: input },
-      { role: "assistant", content: "(mock yanıt - model henüz bağlı değil)" },
-    ]);
+  // 2. Adım: WebGPU varsa modeli indirmeye/yüklemeye başla
+  useEffect(() => {
+    if (isWebGPUSupported) {
+      const loadModel = async () => {
+        try {
+          await initLLMEngine((progress) => {
+            // progress.text içinde "Fetching... %45" gibi MLC'nin kendi logları vardır
+            setLoadingText(progress.text);
+          });
+          setIsEngineReady(true);
+        } catch (error) {
+          console.error(error);
+          setLoadingText("Model yüklenirken bir hata oluştu.");
+        }
+      };
+      loadModel();
+    }
+  }, [isWebGPUSupported]);
+
+  // 3. Adım: Mesaj Gönderme ve Yanıtı Ekrana Yazdırma (Streaming)
+  async function handleSend() {
+    // Boş mesaj atılmasını, modelin hazır olmamasını veya halihazırda cevap yazıyor olmasını engelle
+    if (!input.trim() || !isEngineReady || isGenerating) return;
+
+    const userText = input;
     setInput("");
+    setIsGenerating(true);
+
+    // Ekrana kullanıcının mesajını ve asistanın içi boş "yükleniyor" mesajını ekle
+    const newMessages = [
+      ...messages,
+      { role: "user", content: userText },
+      { role: "assistant", content: "..." }, // Gelecek olan yanıt burayı dolduracak
+    ];
+    setMessages(newMessages);
+
+    try {
+      // Modele göndereceğimiz mesaj geçmişi (son eklediğimiz boş asistan mesajını hariç tutuyoruz)
+      const messagesForModel = newMessages.slice(0, -1);
+
+      // Modeli çağırıyoruz. streamCallback fonksiyonu her yeni kelimede tetiklenir
+      await generateResponse(messagesForModel, (currentText) => {
+        setMessages((prev) => {
+          const updatedMessages = [...prev];
+          // Son sıradaki asistan mesajının içeriğini güncelliyoruz (daktilo efekti)
+          updatedMessages[updatedMessages.length - 1].content = currentText;
+          return updatedMessages;
+        });
+      });
+
+      // TODO: İleride logMessage(sessionId, {...}) backend çağrısını buraya ekleyeceğiz
+
+    } catch (error) {
+      console.error("Yanıt üretilirken hata:", error);
+      // Hata olursa ekrandaki "..." kısmını hata mesajıyla değiştir
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1].content = "Yanıt oluşturulurken bir hata meydana geldi.";
+        return updated;
+      });
+    } finally {
+      setIsGenerating(false);
+    }
   }
 
-  // 1. Aşama: Kontrol ediliyor (Ekran titremesini önler)
+  // --- ARAYÜZ (RENDER) BÖLÜMÜ ---
+
   if (isWebGPUSupported === null) {
     return (
       <div className="flex h-[80vh] items-center justify-center">
@@ -44,33 +101,28 @@ export default function ChatPage() {
     );
   }
 
-  // 2. Aşama: Hata Durumu (WebGPU yoksa kırmızı uyarı)
   if (isWebGPUSupported === false) {
     return (
       <div className="mx-auto flex h-[80vh] max-w-2xl flex-col items-center justify-center p-6 text-center">
         <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-red-700 shadow-sm">
-          <svg className="mx-auto mb-4 h-12 w-12 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-          </svg>
           <h3 className="mb-2 text-xl font-bold">WebGPU Desteklenmiyor</h3>
-          <p className="text-sm">
-            Tarayıcınız yapay zeka modelini cihazınızda yerel olarak çalıştırmak için gereken WebGPU teknolojisini desteklemiyor. Lütfen güncel bir Google Chrome, Microsoft Edge veya Brave tarayıcısı kullanın.
-          </p>
+          <p className="text-sm">Tarayıcınız yerel AI modelini desteklemiyor.</p>
         </div>
       </div>
     );
   }
 
-  // 3. Aşama: Başarılı Durum (Claude'un verdiği UI + Yeşil Bildirim)
   return (
     <div className="mx-auto flex h-[80vh] max-w-2xl flex-col rounded-xl border bg-white shadow-sm">
-      <div className="flex-1 space-y-3 overflow-y-auto p-4">
-        
-        {/* Başarı Bildirimi */}
-        <div className="mb-6 rounded bg-green-50 p-2 text-center text-xs font-medium text-green-700 border border-green-100">
-          ✓ WebGPU aktif. Donanımınız modeli yerel çalıştırmak için uygun.
-        </div>
+      
+      {/* Model Yükleme / Başarı Bildirimi */}
+      <div className={`p-3 text-center text-xs font-medium border-b ${
+        isEngineReady ? "bg-green-50 text-green-700 border-green-100" : "bg-blue-50 text-blue-700 border-blue-100 animate-pulse"
+      }`}>
+        {isEngineReady ? "✓ Yerel AI Motoru Hazır" : loadingText}
+      </div>
 
+      <div className="flex-1 space-y-3 overflow-y-auto p-4">
         {messages.map((m, i) => (
           <div
             key={i}
@@ -87,17 +139,19 @@ export default function ChatPage() {
       
       <div className="flex gap-2 border-t p-3 bg-gray-50 rounded-b-xl">
         <input
-          className="flex-1 rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          className="flex-1 rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 disabled:bg-gray-200"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleSend()}
-          placeholder="Mesajınızı yazın..."
+          placeholder={isEngineReady ? "Mesajınızı yazın..." : "Model yükleniyor, lütfen bekleyin..."}
+          disabled={!isEngineReady || isGenerating}
         />
         <button
           onClick={handleSend}
-          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700"
+          disabled={!isEngineReady || isGenerating}
+          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:bg-indigo-400 disabled:cursor-not-allowed"
         >
-          Gönder
+          {isGenerating ? "Yazıyor..." : "Gönder"}
         </button>
       </div>
     </div>
