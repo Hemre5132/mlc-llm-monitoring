@@ -53,37 +53,53 @@ func (h *CommonHandler) DashboardStats(c *gin.Context) {
 	}
 
 	uid := userID.(uuid.UUID)
-	var sessionCount, messageCount int64
+	var sessionCount, messageCount, scoredMessages int64
 	var avgScore float64
 
-	h.DB.Table("llm_sessions").Where("user_id = ?", uid).Count(&sessionCount)
-	h.DB.Table("llm_messages").Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").Where("llm_sessions.user_id = ?", uid).Count(&messageCount)
-	h.DB.Table("llm_scores").Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").Where("llm_sessions.user_id = ?", uid).Select("COALESCE(AVG(score), 0)").Scan(&avgScore)
+	if err := h.DB.Table("llm_sessions").Where("user_id = ?", uid).Count(&sessionCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "oturum istatistikleri alınamadı"})
+		return
+	}
+	if err := h.DB.Table("llm_messages").Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").Where("llm_sessions.user_id = ?", uid).Count(&messageCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "mesaj istatistikleri alınamadı"})
+		return
+	}
+	if err := h.DB.Table("llm_scores").Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").Where("llm_sessions.user_id = ?", uid).Select("COALESCE(AVG(llm_scores.score), 0)").Scan(&avgScore).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "skor istatistikleri alınamadı"})
+		return
+	}
+	if err := h.DB.Table("llm_scores").Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").Where("llm_sessions.user_id = ?", uid).Count(&scoredMessages).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "skor sayısı alınamadı"})
+		return
+	}
 
 	var sessions []struct {
-		ID           string  `json:"id"`
-		Title        string  `json:"title"`
-		ModelName    string  `json:"model_name"`
-		AverageScore float64 `json:"average_score"`
+		ID             string  `json:"id"`
+		Title          string  `json:"title"`
+		ModelName      string  `json:"model_name"`
+		AverageScore   float64 `json:"average_score"`
+		ScoredMessages int64   `json:"scored_messages"`
 	}
 
 	err := h.DB.Table("llm_sessions as s").
-		Select("s.id, s.title, s.model_name, COALESCE(AVG(ls.score), 0) as average_score").
+		Select("s.id, s.title, s.model_name, COALESCE(AVG(ls.score), 0) as average_score, COUNT(ls.id) as scored_messages").
 		Where("s.user_id = ?", uid).
 		Joins("LEFT JOIN llm_messages as m ON m.session_id = s.id").
 		Joins("LEFT JOIN llm_scores as ls ON ls.message_id = m.id").
-		Group("s.id, s.title, s.model_name").
+		Group("s.id, s.title, s.model_name, s.created_at").
 		Order("s.created_at desc").
 		Scan(&sessions).Error
 	if err != nil {
-		sessions = nil
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "oturum skorları alınamadı"})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"total_sessions": sessionCount,
-		"total_messages": messageCount,
-		"average_score":  avgScore,
-		"sessions":       sessions,
+		"total_sessions":  sessionCount,
+		"total_messages":  messageCount,
+		"average_score":   avgScore,
+		"scored_messages": scoredMessages,
+		"sessions":        sessions,
 	})
 }
 
@@ -93,19 +109,34 @@ func (h *CommonHandler) DashboardStats(c *gin.Context) {
 func (h *CommonHandler) MyStats(c *gin.Context) {
 	userID := c.MustGet("user_id").(uuid.UUID)
 
-	var sessionCount int64
+	var sessionCount, scoredMessages int64
 	var avgScore float64
 
-	h.DB.Table("llm_sessions").Where("user_id = ?", userID).Count(&sessionCount)
-	h.DB.Table("llm_scores").
+	if err := h.DB.Table("llm_sessions").Where("user_id = ?", userID).Count(&sessionCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "kişisel oturum istatistikleri alınamadı"})
+		return
+	}
+	if err := h.DB.Table("llm_scores").
 		Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").
 		Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").
 		Where("llm_sessions.user_id = ?", userID).
 		Select("COALESCE(AVG(llm_scores.score), 0)").
-		Scan(&avgScore)
+		Scan(&avgScore).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "kişisel skor istatistikleri alınamadı"})
+		return
+	}
+	if err := h.DB.Table("llm_scores").
+		Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").
+		Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").
+		Where("llm_sessions.user_id = ?", userID).
+		Count(&scoredMessages).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "kişisel skor sayısı alınamadı"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"session_count": sessionCount,
-		"average_score": avgScore,
+		"session_count":   sessionCount,
+		"average_score":   avgScore,
+		"scored_messages": scoredMessages,
 	})
 }

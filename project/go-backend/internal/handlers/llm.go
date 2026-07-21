@@ -151,6 +151,7 @@ func (h *LLMHandler) CreateMessage(c *gin.Context) {
 		return
 	}
 
+	var savedScore *models.LLMScore
 	if req.Role == "assistant" {
 		var savedMessage models.LLMMessage
 		if err := h.DB.Where("id = ?", message.ID).First(&savedMessage).Error; err != nil {
@@ -158,13 +159,15 @@ func (h *LLMHandler) CreateMessage(c *gin.Context) {
 			return
 		}
 
-		if err := h.scoreAssistantMessage(savedMessage); err != nil {
+		var scoreErr error
+		savedScore, scoreErr = h.scoreAssistantMessage(savedMessage)
+		if scoreErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "puanlama başarısız oldu"})
 			return
 		}
 	}
 
-	c.JSON(http.StatusCreated, message)
+	c.JSON(http.StatusCreated, gin.H{"message": message, "score": savedScore})
 }
 
 // ---------- 16) GET /api/llm/sessions/:id/messages ----------
@@ -272,22 +275,52 @@ func (h *LLMHandler) GetScores(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"scores": scores})
 }
 
-func (h *LLMHandler) scoreAssistantMessage(message models.LLMMessage) error {
+// BackfillScores creates scores only for existing assistant messages that do
+// not have a score yet. Existing scores are left unchanged.
+func (h *LLMHandler) BackfillScores(c *gin.Context) {
+	userID := c.MustGet("user_id").(uuid.UUID)
+
+	var messages []models.LLMMessage
+	if err := h.DB.Where("role = ? AND session_id IN (?)", "assistant",
+		h.DB.Table("llm_sessions").Select("id").Where("user_id = ?", userID),
+	).Where("id NOT IN (?)", h.DB.Table("llm_scores").Select("message_id")).
+		Find(&messages).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "eksik skorlar bulunamadı"})
+		return
+	}
+
+	created := 0
+	for _, message := range messages {
+		if _, err := h.scoreAssistantMessage(message); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "eksik skorlar tamamlanamadı"})
+			return
+		}
+		created++
+	}
+
+	c.JSON(http.StatusOK, gin.H{"created": created})
+}
+
+func (h *LLMHandler) scoreAssistantMessage(message models.LLMMessage) (*models.LLMScore, error) {
 	score, err := h.calculateScore(message)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var existing models.LLMScore
 	err = h.DB.Where("message_id = ?", message.ID).First(&existing).Error
 	if err == nil {
-		return nil
+		return &existing, nil
 	}
 	if err != gorm.ErrRecordNotFound {
-		return err
+		return nil, err
 	}
 
-	return h.DB.Create(&score).Error
+	if err := h.DB.Create(&score).Error; err != nil {
+		return nil, err
+	}
+
+	return &score, nil
 }
 
 func (h *LLMHandler) calculateScore(message models.LLMMessage) (models.LLMScore, error) {
