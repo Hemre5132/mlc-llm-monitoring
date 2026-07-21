@@ -84,17 +84,27 @@ func (h *LLMHandler) DeleteSession(c *gin.Context) {
 	userID := c.MustGet("user_id").(uuid.UUID)
 	sessionID := c.Param("id")
 
-	result := h.DB.Where("id = ? AND user_id = ?", sessionID, userID).Delete(&models.LLMSession{})
+	// 1. Önce oturuma ait yetkinin doğrulanması için oturumu bul
+	var session models.LLMSession
+	if err := h.DB.Where("id = ? AND user_id = ?", sessionID, userID).First(&session).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "oturum bulunamadı veya yetkiniz yok"})
+		return
+	}
+
+	// 2. Bu oturumdaki mesajlara ait olan skorları sil (Raw SQL ile alt sorgu)
+	h.DB.Exec("DELETE FROM llm_scores WHERE message_id IN (SELECT id FROM llm_messages WHERE session_id = ?)", sessionID)
+
+	// 3. Bu oturuma ait tüm mesajları sil
+	h.DB.Where("session_id = ?", sessionID).Delete(&models.LLMMessage{})
+
+	// 4. Artık bağlı hiçbir alt kayıt kalmadığı için oturumu güvenle silebiliriz
+	result := h.DB.Where("id = ?", sessionID).Delete(&models.LLMSession{})
+
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "oturum silinemedi"})
 		return
 	}
-	if result.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "oturum bulunamadı"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "oturum silindi"})
+	c.JSON(http.StatusOK, gin.H{"message": "oturum ve bağlı tüm veriler başarıyla silindi"})
 }
 
 // ---------- 15) POST /api/llm/sessions/:id/messages ----------
