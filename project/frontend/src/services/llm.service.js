@@ -3,6 +3,8 @@ import { CreateMLCEngine } from "@mlc-ai/web-llm";
 
 // --- WEBLLM AYARLARI ---
 let engine = null;
+let isLoading = false;
+let loadPromise = null;
 const SELECTED_MODEL = "Qwen2.5-1.5B-Instruct-q4f16_1-MLC";
 
 // --------------------------------------------------
@@ -34,32 +36,60 @@ export async function backfillScores() {
 // 2. YEREL YAPAY ZEKA (WEBLLM) FONKSİYONLARI
 // --------------------------------------------------
 
+/**
+ * Modül-seviyesinde engine singleton'ı.
+ * isLoading ve loadPromise ile aynı anda birden fazla init çağrısını engeller.
+ */
+export function getEngine() {
+  return engine;
+}
+
+export function isModelLoading() {
+  return isLoading;
+}
+
+export function isModelReady() {
+  return engine !== null;
+}
+
 export async function initLLMEngine(progressCallback) {
   // Eğer motor zaten çalışıyorsa, tekrar kurma
   if (engine) return engine;
 
+  // Aynı anda birden fazla init çağrısını engelle
+  if (isLoading) {
+    // Yükleme devam ediyorsa, mevcut promise'ı döndür
+    if (loadPromise) return loadPromise;
+    throw new Error("Model is already being loaded but no promise tracked.");
+  }
+
   try {
-    // Motoru oluştur, modeli indir ve ilerlemeyi (yüzdeyi) arayüze bildir
-    engine = await CreateMLCEngine(
+    isLoading = true;
+
+    // Promise'ı kaydet ki concurrent çağrılar aynı sonucu beklesin
+    loadPromise = CreateMLCEngine(
       SELECTED_MODEL,
       { initProgressCallback: progressCallback }
     );
+
+    engine = await loadPromise;
     return engine;
   } catch (error) {
     console.error("LLM Motoru başlatılamadı:", error);
     throw error;
+  } finally {
+    isLoading = false;
+    loadPromise = null;
   }
 }
 
 export async function generateResponse(messages, streamCallback) {
   if (!engine) {
     console.warn("Motor henüz hazır değil, bekleniyor...");
-    // Küçük bir bekleme süresi veya doğrudan hata fırlatma
     throw new Error("Engine is not initialized yet.");
   }
 
   // 1. DOKUNUŞ: SİSTEM KOMUTU (Sadece İngilizce)
-  // Kullanıcının mesajlarının en başına gizli bir "system" mesajı ekleyerek modeli yönlendiriyoruz.
   const cleanMessages = messages.filter(m => m.role !== 'system');
 
   const formattedMessages = [
@@ -67,12 +97,12 @@ export async function generateResponse(messages, streamCallback) {
       role: "system", 
       content: "You are a highly intelligent and helpful AI assistant. You MUST always respond strictly in English, regardless of the language the user uses to ask the question. Be concise and accurate." 
     },
-    ...cleanMessages // Senin arayüzden gönderdiğin mesaj geçmişi bunun altına ekleniyor
+    ...cleanMessages
   ];
 
   // Modele mesajları gönder ve stream (akan) yanıt iste
   const chunks = await engine.chat.completions.create({
-    messages: formattedMessages, // Artık ham messages yerine formatlanmış olanı gönderiyoruz
+    messages: formattedMessages,
     temperature: 0.4,
     stream: true,
   });
@@ -82,7 +112,6 @@ export async function generateResponse(messages, streamCallback) {
     const text = chunk.choices[0]?.delta?.content || "";
     fullReply += text;
     
-    // Her yeni kelime geldiğinde arayüzü güncelle (Daktilo efekti)
     if (streamCallback) {
       streamCallback(fullReply);
     }

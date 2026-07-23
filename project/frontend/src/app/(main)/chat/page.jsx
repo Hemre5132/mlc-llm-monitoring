@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   createSession,
   generateResponse,
   getMessages,
   initLLMEngine,
+  isModelLoading,
+  isModelReady,
   logMessage,
 } from "@/services/llm.service";
 
@@ -29,6 +31,9 @@ export default function ChatPage() {
   const [messages, setMessages] = useState([DEFAULT_ASSISTANT_MESSAGE]);
   const [input, setInput] = useState("");
 
+  // Engine init'inin bir kez çalışmasını garanti altına almak için ref guard
+  const engineInitStarted = useRef(false);
+
   const startNewChat = async () => {
     try {
       const session = await createSession({ model_name: "gemma-2b-it-q4f16_1-MLC" });
@@ -47,9 +52,27 @@ export default function ChatPage() {
   };
 
   useEffect(() => {
-    if ("gpu" in navigator) setIsWebGPUSupported(true);
-    else setIsWebGPUSupported(false);
+    // --- WebGPU ve Engine kontrolü (tek effect, tek kaynak) ---
+    if ("gpu" in navigator) {
+      setIsWebGPUSupported(true);
+    } else {
+      setIsWebGPUSupported(false);
+      return;
+    }
 
+    // --- Eğer engine singleton'ı zaten yüklüyse state'i hemen güncelle ---
+    if (isModelReady()) {
+      setIsEngineReady(true);
+      setLoadingText("✓ Model ready");
+      engineInitStarted.current = true;
+    }
+
+    // --- Eğer yükleme halihazırda devam ediyorsa bekleyen promise'ı yakala ---
+    if (isModelLoading() && !engineInitStarted.current) {
+      engineInitStarted.current = true;
+    }
+
+    // --- Session yönetimi ---
     const initChat = async () => {
       try {
         const storedSessionId =
@@ -79,24 +102,27 @@ export default function ChatPage() {
     };
 
     initChat();
-  }, []);
 
-  useEffect(() => {
-    if (isWebGPUSupported) {
+    // --- Engine başlatma (ref guard ile) ---
+    if (!engineInitStarted.current) {
+      engineInitStarted.current = true;
+
       const loadModel = async () => {
         try {
           await initLLMEngine((progress) => {
             setLoadingText(progress.text);
           });
           setIsEngineReady(true);
+          setLoadingText("✓ Model ready");
         } catch (error) {
           console.error(error);
           setLoadingText("Model yüklenirken bir hata oluştu.");
         }
       };
+
       loadModel();
     }
-  }, [isWebGPUSupported]);
+  }, []); // ← boş dependency: sadece mount'ta bir kez çalışır
 
   async function handleSend() {
     if (!input.trim() || !isEngineReady || isGenerating) return;
