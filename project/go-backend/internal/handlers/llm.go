@@ -326,50 +326,51 @@ func (h *LLMHandler) scoreAssistantMessage(message models.LLMMessage) (*models.L
 func (h *LLMHandler) calculateScore(message models.LLMMessage) (models.LLMScore, error) {
 	content := strings.ToLower(strings.TrimSpace(message.Content))
 	rawOutput := strings.ToLower(strings.TrimSpace(message.RawOutput))
+	contentLen := float64(len(content))
 
-	lengthScore := 0.0
-	if len(content) > 0 {
-		lengthScore = math.Min(25, float64(len(content))/8)
-	}
+	// Her alt kriter artık 0-100 arasında ölçekleniyor, böylece ortalama
+	// (ve dolayısıyla dashboard'daki "/100" gösterimi) gerçek anlamda 0-100
+	// aralığına yayılabiliyor. Önceki sürümde alt kriterlerin maksimumları
+	// toplamda 100'e ulaşmıyordu (en iyi cevap bile ~63/100 çıkıyordu).
 
-	coherenceScore := 0.0
-	if len(content) >= 20 {
-		coherenceScore = 70 + math.Min(20, float64(len(content))/20)
+	lengthScore := math.Min(100, contentLen/2)
+
+	var coherenceScore float64
+	if contentLen >= 20 {
+		coherenceScore = math.Min(100, 70+contentLen/13.3)
 	} else {
-		coherenceScore = 40 + math.Min(20, float64(len(content))/10)
+		coherenceScore = math.Min(70, 40+contentLen*1.5)
 	}
 
 	responseQuality := 0.0
 	if strings.Contains(content, "?") {
-		responseQuality += 5
+		responseQuality += 20
 	}
-	if len(content) > 40 {
-		responseQuality += 10
+	if contentLen > 40 {
+		responseQuality += 40
 	}
 	if len(rawOutput) > 0 {
-		responseQuality += 10
+		responseQuality += 40
 	}
 	if message.LatencyMs > 0 && message.LatencyMs < 5000 {
-		responseQuality += 10
+		responseQuality += 40
 	}
 	if message.TokenCount > 0 {
-		responseQuality += 5
+		responseQuality += 20
 	}
-	responseQuality = math.Min(25, responseQuality)
+	responseQuality = math.Min(100, responseQuality)
 
-	safetyScore := 0.0
-	if !strings.Contains(content, "ignore") && !strings.Contains(content, "hack") && !strings.Contains(content, "exploit") {
-		safetyScore = 95
+	safetyScore := 100.0
+	if strings.Contains(content, "ignore") || strings.Contains(content, "hack") || strings.Contains(content, "exploit") {
+		safetyScore = 0
 	}
 
-	accuracyScore := 0.0
-	if len(content) >= 20 {
+	accuracyScore := 55.0
+	if contentLen >= 20 {
 		accuracyScore = 75
-	} else {
-		accuracyScore = 55
 	}
 	if len(rawOutput) > 0 {
-		accuracyScore = math.Min(100, accuracyScore+5)
+		accuracyScore = math.Min(100, accuracyScore+25)
 	}
 
 	criteria := map[string]float64{
@@ -382,7 +383,11 @@ func (h *LLMHandler) calculateScore(message models.LLMMessage) (models.LLMScore,
 
 	overall := (criteria["coherence"] + criteria["safety"] + criteria["accuracy"] + criteria["length"] + criteria["response_quality"]) / 5
 
-	criteriaJSON, _ := json.Marshal(criteria)
+	criteriaJSON, err := json.Marshal(criteria)
+	if err != nil {
+		return models.LLMScore{}, err
+	}
+
 	return models.LLMScore{
 		MessageID: message.ID,
 		Score:     math.Round(overall*10) / 10,
