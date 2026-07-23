@@ -27,6 +27,7 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401 && typeof window !== "undefined") {
       localStorage.removeItem(TOKEN_KEY);
+      document.cookie = `${TOKEN_KEY}=; path=/; max-age=0`;
       // Kullanıcıyı login'e geri gönder
       if (!window.location.pathname.includes("/login")) {
         window.location.href = "/login";
@@ -34,6 +35,6 @@ api.interceptors.response.use(
     }
     return Promise.reject(error);
   }
-);
+);  
 
 export default api; 

@@ -5,6 +5,9 @@ import { CreateMLCEngine } from "@mlc-ai/web-llm";
 let engine = null;
 let isLoading = false;
 let loadPromise = null;
+
+// Orijinal çalışan model — reload fix öncesi buydu ve sorunsuz çalışıyordu.
+// Sadece reload fix'i (useRef + isModelLoading guard) koruyoruz.
 const SELECTED_MODEL = "Qwen2.5-1.5B-Instruct-q4f16_1-MLC";
 
 // --------------------------------------------------
@@ -22,7 +25,6 @@ export async function listSessions() {
 }
 
 export async function logMessage(sessionId, payload) {
-  // payload: { role: "user" | "assistant", content, score? }
   const { data } = await api.post(`/llm/sessions/${sessionId}/messages`, payload);
   return data;
 }
@@ -36,10 +38,6 @@ export async function backfillScores() {
 // 2. YEREL YAPAY ZEKA (WEBLLM) FONKSİYONLARI
 // --------------------------------------------------
 
-/**
- * Modül-seviyesinde engine singleton'ı.
- * isLoading ve loadPromise ile aynı anda birden fazla init çağrısını engeller.
- */
 export function getEngine() {
   return engine;
 }
@@ -52,13 +50,19 @@ export function isModelReady() {
   return engine !== null;
 }
 
+/** Device lost veya hata durumunda engine'i sıfırla */
+export function resetEngine() {
+  engine = null;
+  isLoading = false;
+  loadPromise = null;
+}
+
 export async function initLLMEngine(progressCallback) {
   // Eğer motor zaten çalışıyorsa, tekrar kurma
   if (engine) return engine;
 
   // Aynı anda birden fazla init çağrısını engelle
   if (isLoading) {
-    // Yükleme devam ediyorsa, mevcut promise'ı döndür
     if (loadPromise) return loadPromise;
     throw new Error("Model is already being loaded but no promise tracked.");
   }
@@ -66,7 +70,6 @@ export async function initLLMEngine(progressCallback) {
   try {
     isLoading = true;
 
-    // Promise'ı kaydet ki concurrent çağrılar aynı sonucu beklesin
     loadPromise = CreateMLCEngine(
       SELECTED_MODEL,
       { initProgressCallback: progressCallback }
@@ -75,6 +78,7 @@ export async function initLLMEngine(progressCallback) {
     engine = await loadPromise;
     return engine;
   } catch (error) {
+    engine = null;
     console.error("LLM Motoru başlatılamadı:", error);
     throw error;
   } finally {
@@ -89,7 +93,6 @@ export async function generateResponse(messages, streamCallback) {
     throw new Error("Engine is not initialized yet.");
   }
 
-  // 1. DOKUNUŞ: SİSTEM KOMUTU (Sadece İngilizce)
   const cleanMessages = messages.filter(m => m.role !== 'system');
 
   const formattedMessages = [
@@ -100,24 +103,38 @@ export async function generateResponse(messages, streamCallback) {
     ...cleanMessages
   ];
 
-  // Modele mesajları gönder ve stream (akan) yanıt iste
-  const chunks = await engine.chat.completions.create({
-    messages: formattedMessages,
-    temperature: 0.4,
-    stream: true,
-  });
+  try {
+    const chunks = await engine.chat.completions.create({
+      messages: formattedMessages,
+      temperature: 0.4,
+      stream: true,
+    });
 
-  let fullReply = "";
-  for await (const chunk of chunks) {
-    const text = chunk.choices[0]?.delta?.content || "";
-    fullReply += text;
-    
-    if (streamCallback) {
-      streamCallback(fullReply);
+    let fullReply = "";
+    for await (const chunk of chunks) {
+      const text = chunk.choices[0]?.delta?.content || "";
+      fullReply += text;
+      
+      if (streamCallback) {
+        streamCallback(fullReply);
+      }
     }
-  }
 
-  return fullReply;
+    return fullReply;
+  } catch (error) {
+    const errorStr = error?.toString?.() || error?.message || "";
+    const isDeviceLost = 
+      errorStr.includes("Device was lost") || 
+      errorStr.includes("GPU") ||
+      error?.message?.includes("Device was lost");
+
+    if (isDeviceLost) {
+      console.error("GPU device lost — engine sıfırlanıyor:", error);
+      resetEngine();
+    }
+
+    throw error;
+  }
 }
 
 export async function getMessages(sessionId) {

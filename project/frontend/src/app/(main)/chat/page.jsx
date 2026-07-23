@@ -9,6 +9,7 @@ import {
   isModelLoading,
   isModelReady,
   logMessage,
+  resetEngine,
 } from "@/services/llm.service";
 
 const SESSION_STORAGE_KEY = "currentSessionId";
@@ -30,9 +31,33 @@ export default function ChatPage() {
   const [sessionId, setSessionId] = useState(null);
   const [messages, setMessages] = useState([DEFAULT_ASSISTANT_MESSAGE]);
   const [input, setInput] = useState("");
+  const [deviceError, setDeviceError] = useState(null); // device lost hatası UI'ı
 
   // Engine init'inin bir kez çalışmasını garanti altına almak için ref guard
   const engineInitStarted = useRef(false);
+
+  // Device lost sonrası modeli yeniden yükle
+  const reloadModel = async () => {
+    setDeviceError(null);
+    setLoadingText("Model yeniden başlatılıyor...");
+    setIsEngineReady(false);
+    engineInitStarted.current = false;
+    resetEngine();
+
+    // Kısa bir bekleme — GPU'nun toparlanmasına izin ver
+    await new Promise((r) => setTimeout(r, 1500));
+
+    try {
+      await initLLMEngine((progress) => {
+        setLoadingText(progress.text);
+      });
+      setIsEngineReady(true);
+      setLoadingText("✓ Model ready");
+    } catch (error) {
+      console.error("Yeniden yükleme hatası:", error);
+      setDeviceError("Model yeniden yüklenemedi. Sayfayı tazelemeyi deneyin.");
+    }
+  };
 
   const startNewChat = async () => {
     try {
@@ -177,6 +202,18 @@ export default function ChatPage() {
       }
     } catch (error) {
       console.error("Yanıt üretilirken hata:", error);
+
+      // Device lost hatası mı kontrol et
+      const isDeviceLost = 
+        error?.message?.includes("Device was lost") || 
+        error?.message?.includes("GPU") ||
+        error?.toString?.()?.includes("Device was lost");
+
+      if (isDeviceLost) {
+        setIsEngineReady(false);
+        setDeviceError("GPU belleği tükendi. Model sıfırlandı. Lütfen 'Modeli Yeniden Yükle' butonuna tıklayın.");
+      }
+
       setMessages((prev) => {
         const updated = [...prev];
         updated[updated.length - 1].content = "Yanıt oluşturulurken bir hata meydana geldi.";
@@ -223,6 +260,19 @@ export default function ChatPage() {
           + New Chat
         </button>
       </div>
+
+      {/* Device lost hatası banner'ı */}
+      {deviceError && (
+        <div className="mx-4 mt-2 rounded-lg border border-orange-300 bg-orange-50 p-3 text-center text-sm text-orange-800">
+          <p className="mb-2">{deviceError}</p>
+          <button
+            onClick={reloadModel}
+            className="rounded-md bg-orange-500 px-4 py-1.5 text-xs font-semibold text-white hover:bg-orange-600 transition-colors"
+          >
+            🔄 Modeli Yeniden Yükle
+          </button>
+        </div>
+      )}
 
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
         {messages.map((m, i) => (
