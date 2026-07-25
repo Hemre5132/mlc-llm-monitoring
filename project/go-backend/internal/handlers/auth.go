@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"masterfabric-backend/internal/config"
+	"masterfabric-backend/internal/metrics"
 	"masterfabric-backend/internal/models"
 	"masterfabric-backend/internal/utils"
 
@@ -60,8 +61,8 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// NOT: Gerçek projede burada email gönderim servisi (SES/SendGrid vb.)
-	// tetiklenir. Demo günü için verify token'ı response'ta dönmek yeterli.
+	metrics.RegistersTotal.Inc()
+
 	c.JSON(http.StatusCreated, gin.H{
 		"message":      "kayıt başarılı, email doğrulaması gerekli",
 		"user_id":      user.ID,
@@ -98,6 +99,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "token üretilemedi"})
 		return
 	}
+
+	metrics.LoginsTotal.Inc()
+	metrics.ActiveUsers.Inc()
 
 	c.JSON(http.StatusOK, gin.H{
 		"access_token":  access,

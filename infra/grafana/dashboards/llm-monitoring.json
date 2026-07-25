@@ -1,0 +1,145 @@
+{
+  "title": "MLC-LLM Monitoring",
+  "uid": "mlc-llm-monitoring",
+  "version": 1,
+  "panels": [
+    {
+      "title": "Login Sayısı (son 1 saat)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "increase(auth_logins_total[1h])",
+          "legendFormat": "Login"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "green" }
+        }
+      }
+    },
+    {
+      "title": "Register Sayısı (son 1 saat)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "expr": "increase(auth_registers_total[1h])",
+          "legendFormat": "Register"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "blue" }
+        }
+      }
+    },
+    {
+      "title": "AI Analiz Sayısı (son 1 saat)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(increase(llm_calls_total[1h]))",
+          "legendFormat": "AI Calls"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "purple" }
+        }
+      }
+    },
+    {
+      "title": "Online Kullanıcı",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        {
+          "expr": "llm_active_users",
+          "legendFormat": "Online"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "orange" }
+        }
+      }
+    },
+    {
+      "title": "API Response Süresi (p95, son 5 dk)",
+      "type": "graph",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "title": "HTTP İstek Sayısı (rate/sn)",
+      "type": "graph",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate(http_requests_total[5m])",
+          "legendFormat": "{{method}} {{endpoint}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rps"
+        }
+      }
+    },
+    {
+      "title": "LLM Yanıt Süresi (Ortalama, son 5 dk)",
+      "type": "graph",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "rate(llm_generate_duration_seconds_sum[5m]) / rate(llm_generate_duration_seconds_count[5m])",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "title": "Hata Sayısı (son 1 saat)",
+      "type": "graph",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "expr": "increase(errors_total[1h])",
+          "legendFormat": "{{type}} - {{endpoint}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "red" }
+        }
+      }
+    }
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timezone": "browser"
+}
