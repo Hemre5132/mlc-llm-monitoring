@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"masterfabric-backend/internal/llmclient"
+	"masterfabric-backend/internal/metrics"
 	"masterfabric-backend/internal/models"
 
 	"github.com/gin-gonic/gin"
@@ -26,8 +27,6 @@ func NewLLMHandler(db *gorm.DB, ollama *llmclient.OllamaClient) *LLMHandler {
 }
 
 // ---------- 11) POST /api/llm/sessions ----------
-// Tarayıcıda WebLLM ile yeni bir oturum başlatıldığında frontend bunu çağırır.
-
 type createSessionRequest struct {
 	ModelName string `json:"model_name" binding:"required"`
 	Title     string `json:"title"`
@@ -52,11 +51,12 @@ func (h *LLMHandler) CreateSession(c *gin.Context) {
 		return
 	}
 
+	metrics.ActiveSessions.Inc()
+
 	c.JSON(http.StatusCreated, session)
 }
 
 // ---------- 12) GET /api/llm/sessions ----------
-
 func (h *LLMHandler) ListSessions(c *gin.Context) {
 	userID := c.MustGet("user_id").(uuid.UUID)
 
@@ -70,7 +70,6 @@ func (h *LLMHandler) ListSessions(c *gin.Context) {
 }
 
 // ---------- 13) GET /api/llm/sessions/:id ----------
-
 func (h *LLMHandler) GetSession(c *gin.Context) {
 	userID := c.MustGet("user_id").(uuid.UUID)
 	sessionID := c.Param("id")
@@ -85,38 +84,30 @@ func (h *LLMHandler) GetSession(c *gin.Context) {
 }
 
 // ---------- 14) DELETE /api/llm/sessions/:id ----------
-
 func (h *LLMHandler) DeleteSession(c *gin.Context) {
 	userID := c.MustGet("user_id").(uuid.UUID)
 	sessionID := c.Param("id")
 
-	// 1. Önce oturuma ait yetkinin doğrulanması için oturumu bul
 	var session models.LLMSession
 	if err := h.DB.Where("id = ? AND user_id = ?", sessionID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "oturum bulunamadı veya yetkiniz yok"})
 		return
 	}
 
-	// 2. Bu oturumdaki mesajlara ait olan skorları sil (Raw SQL ile alt sorgu)
 	h.DB.Exec("DELETE FROM llm_scores WHERE message_id IN (SELECT id FROM llm_messages WHERE session_id = ?)", sessionID)
-
-	// 3. Bu oturuma ait tüm mesajları sil
 	h.DB.Where("session_id = ?", sessionID).Delete(&models.LLMMessage{})
-
-	// 4. Artık bağlı hiçbir alt kayıt kalmadığı için oturumu güvenle silebiliriz
 	result := h.DB.Where("id = ?", sessionID).Delete(&models.LLMSession{})
 
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "oturum silinemedi"})
 		return
 	}
+
+	metrics.ActiveSessions.Dec()
 	c.JSON(http.StatusOK, gin.H{"message": "oturum ve bağlı tüm veriler başarıyla silindi"})
 }
 
 // ---------- 15) POST /api/llm/sessions/:id/messages ----------
-// Tarayıcıda üretilen ham (raw) prompt/response burada loglanır — "Raw LLM
-// Monitoring" gereksiniminin karşılandığı ana endpoint budur.
-
 type createMessageRequest struct {
 	Role       string `json:"role" binding:"required,oneof=user assistant"`
 	Content    string `json:"content" binding:"required"`
@@ -175,10 +166,6 @@ func (h *LLMHandler) CreateMessage(c *gin.Context) {
 }
 
 // ---------- POST /api/llm/sessions/:id/generate ----------
-// Frontend, kullanıcı mesajını önce (mevcut) POST /messages ile kaydeder,
-// sonra bu endpoint'i çağırarak Ollama'dan asistan cevabını ister.
-// Cevap otomatik olarak kaydedilir ve skorlanır.
-
 type generateChatRequest struct {
 	Messages []llmclient.ChatMessage `json:"messages" binding:"required"`
 }
@@ -204,11 +191,20 @@ func (h *LLMHandler) GenerateChat(c *gin.Context) {
 	reply, err := h.Ollama.Chat(req.Messages)
 	if err != nil {
 		log.Printf("GenerateChat[%s]: Ollama error: %v", sessionID, err)
+		metrics.ErrorsTotal.WithLabelValues("ollama", "/api/llm/sessions/:id/generate").Inc()
 		c.JSON(http.StatusBadGateway, gin.H{"error": "model yanıt üretemedi: " + err.Error()})
 		return
 	}
 	log.Printf("GenerateChat[%s]: Ollama replied in %v", sessionID, time.Since(startedAt))
 	latencyMs := int(time.Since(startedAt).Milliseconds())
+
+	// Prometheus metrikleri
+	modelLabel := session.ModelName
+	if modelLabel == "" {
+		modelLabel = "gemma2:2b"
+	}
+	metrics.LLMLatency.WithLabelValues(modelLabel).Observe(float64(latencyMs) / 1000.0)
+	metrics.AICallsTotal.WithLabelValues(modelLabel).Inc()
 
 	sid, _ := uuid.Parse(sessionID)
 	message := models.LLMMessage{
@@ -223,6 +219,8 @@ func (h *LLMHandler) GenerateChat(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "mesaj kaydedilemedi"})
 		return
 	}
+
+	metrics.LLMTokenCount.WithLabelValues(modelLabel).Observe(float64(message.TokenCount))
 
 	score, err := h.scoreAssistantMessage(message)
 	if err != nil {
@@ -242,7 +240,6 @@ func estimateWordCount(text string) int {
 }
 
 // ---------- 16) GET /api/llm/sessions/:id/messages ----------
-
 func (h *LLMHandler) ListMessages(c *gin.Context) {
 	userID := c.MustGet("user_id").(uuid.UUID)
 	sessionID := c.Param("id")
@@ -263,12 +260,6 @@ func (h *LLMHandler) ListMessages(c *gin.Context) {
 }
 
 // ---------- 17) POST /api/llm/sessions/:id/score ----------
-// "Deci.Scoring": bir mesaj için karar puanı hesaplar ve kaydeder.
-// NOT: Skorlama algoritmasının kendisi ayrı bir adımda detaylandırılacak;
-// burada basit bir placeholder hesaplama var — gerçek kriterler
-// (tutarlılık/güvenlik/doğruluk) bir sonraki aşamada bu fonksiyonun içine
-// eklenecek.
-
 type createScoreRequest struct {
 	MessageID string `json:"message_id" binding:"required"`
 }
@@ -327,7 +318,6 @@ func (h *LLMHandler) CreateScore(c *gin.Context) {
 }
 
 // ---------- 18) GET /api/llm/sessions/:id/score ----------
-
 func (h *LLMHandler) GetScores(c *gin.Context) {
 	userID := c.MustGet("user_id").(uuid.UUID)
 	sessionID := c.Param("id")
@@ -398,11 +388,6 @@ func (h *LLMHandler) calculateScore(message models.LLMMessage) (models.LLMScore,
 	content := strings.ToLower(strings.TrimSpace(message.Content))
 	rawOutput := strings.ToLower(strings.TrimSpace(message.RawOutput))
 	contentLen := float64(len(content))
-
-	// Her alt kriter artık 0-100 arasında ölçekleniyor, böylece ortalama
-	// (ve dolayısıyla dashboard'daki "/100" gösterimi) gerçek anlamda 0-100
-	// aralığına yayılabiliyor. Önceki sürümde alt kriterlerin maksimumları
-	// toplamda 100'e ulaşmıyordu (en iyi cevap bile ~63/100 çıkıyordu).
 
 	lengthScore := math.Min(100, contentLen/2)
 

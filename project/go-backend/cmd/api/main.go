@@ -10,6 +10,7 @@ import (
 	"masterfabric-backend/internal/middleware"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -24,6 +25,10 @@ func main() {
 
 	router := gin.Default()
 	router.Use(middleware.CORS(cfg.AllowedOrigin))
+	router.Use(middleware.PrometheusMetrics())
+
+	// Prometheus metrik endpoint'i — Gin dışında, doğrudan router'a bağlı
+	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	authHandler := handlers.NewAuthHandler(db, cfg)
 	configHandler := handlers.NewConfigHandler(cfg)
