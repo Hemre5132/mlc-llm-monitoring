@@ -12,10 +12,12 @@ type Config struct {
 	Port            string
 	DatabaseURL     string
 	JWTSecret       string
-	JWTAccessTTLMin int    // dakika cinsinden access token ömrü
-	JWTRefreshTTLHr int    // saat cinsinden refresh token ömrü
-	AllowedOrigin   string // CORS için Vercel frontend URL'i
-	Env             string // "development" | "production"
+	JWTAccessTTLMin int
+	JWTRefreshTTLHr int
+	AllowedOrigin   string
+	Env             string
+	OllamaURL       string // örn: http://localhost:11434
+	OllamaModel     string // örn: gemma2:2b (ollama'da nasıl adlandırdıysan)
 }
 
 // Load, .env dosyasını (varsa) okur ve environment değişkenlerinden Config üretir.
@@ -31,9 +33,11 @@ func Load() *Config {
 		DatabaseURL:     getEnv("DATABASE_URL", ""),
 		JWTSecret:       getEnv("JWT_SECRET", ""),
 		JWTAccessTTLMin: 15,
-		JWTRefreshTTLHr: 24 * 7, // 7 gün
+		JWTRefreshTTLHr: 24 * 7,
 		AllowedOrigin:   getEnv("ALLOWED_ORIGIN", "http://localhost:3000"),
 		Env:             getEnv("ENV", "development"),
+		OllamaURL:       getEnv("OLLAMA_URL", "http://localhost:11434"),
+		OllamaModel:     getEnv("OLLAMA_MODEL", "gemma2:2b"),
 	}
 
 	if cfg.DatabaseURL == "" {

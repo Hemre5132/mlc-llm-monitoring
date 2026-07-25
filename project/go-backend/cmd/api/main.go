@@ -6,6 +6,7 @@ import (
 	"masterfabric-backend/internal/config"
 	"masterfabric-backend/internal/database"
 	"masterfabric-backend/internal/handlers"
+	"masterfabric-backend/internal/llmclient"
 	"masterfabric-backend/internal/middleware"
 
 	"github.com/gin-gonic/gin"
@@ -14,6 +15,8 @@ import (
 func main() {
 	cfg := config.Load()
 	db := database.Connect(cfg.DatabaseURL)
+
+	ollamaClient := llmclient.NewOllamaClient(cfg.OllamaURL, cfg.OllamaModel)
 
 	if cfg.Env == "production" {
 		gin.SetMode(gin.ReleaseMode)
@@ -24,7 +27,7 @@ func main() {
 
 	authHandler := handlers.NewAuthHandler(db, cfg)
 	configHandler := handlers.NewConfigHandler(cfg)
-	llmHandler := handlers.NewLLMHandler(db)
+	llmHandler := handlers.NewLLMHandler(db, ollamaClient)
 	commonHandler := handlers.NewCommonHandler(db)
 
 	auth := middleware.RequireAuth(cfg.JWTSecret)
@@ -63,6 +66,7 @@ func main() {
 			llmGroup.POST("/sessions/:id/score", llmHandler.CreateScore)
 			llmGroup.GET("/sessions/:id/score", llmHandler.GetScores)
 			llmGroup.POST("/scores/backfill", llmHandler.BackfillScores)
+			llmGroup.POST("/sessions/:id/generate", llmHandler.GenerateChat)
 		}
 
 		// ---- Common Services [4] ----
