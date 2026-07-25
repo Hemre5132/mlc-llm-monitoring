@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"math"
 	"net/http"
 	"strings"
+	"time"
 
+	"masterfabric-backend/internal/llmclient"
 	"masterfabric-backend/internal/models"
 
 	"github.com/gin-gonic/gin"
@@ -14,11 +17,12 @@ import (
 )
 
 type LLMHandler struct {
-	DB *gorm.DB
+	DB     *gorm.DB
+	Ollama *llmclient.OllamaClient
 }
 
-func NewLLMHandler(db *gorm.DB) *LLMHandler {
-	return &LLMHandler{DB: db}
+func NewLLMHandler(db *gorm.DB, ollama *llmclient.OllamaClient) *LLMHandler {
+	return &LLMHandler{DB: db, Ollama: ollama}
 }
 
 // ---------- 11) POST /api/llm/sessions ----------
@@ -168,6 +172,73 @@ func (h *LLMHandler) CreateMessage(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"message": message, "score": savedScore})
+}
+
+// ---------- POST /api/llm/sessions/:id/generate ----------
+// Frontend, kullanıcı mesajını önce (mevcut) POST /messages ile kaydeder,
+// sonra bu endpoint'i çağırarak Ollama'dan asistan cevabını ister.
+// Cevap otomatik olarak kaydedilir ve skorlanır.
+
+type generateChatRequest struct {
+	Messages []llmclient.ChatMessage `json:"messages" binding:"required"`
+}
+
+func (h *LLMHandler) GenerateChat(c *gin.Context) {
+	userID := c.MustGet("user_id").(uuid.UUID)
+	sessionID := c.Param("id")
+
+	var session models.LLMSession
+	if err := h.DB.Where("id = ? AND user_id = ?", sessionID, userID).First(&session).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "oturum bulunamadı"})
+		return
+	}
+
+	var req generateChatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	startedAt := time.Now()
+	log.Printf("GenerateChat[%s]: %d messages, sending to Ollama", sessionID, len(req.Messages))
+	reply, err := h.Ollama.Chat(req.Messages)
+	if err != nil {
+		log.Printf("GenerateChat[%s]: Ollama error: %v", sessionID, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "model yanıt üretemedi: " + err.Error()})
+		return
+	}
+	log.Printf("GenerateChat[%s]: Ollama replied in %v", sessionID, time.Since(startedAt))
+	latencyMs := int(time.Since(startedAt).Milliseconds())
+
+	sid, _ := uuid.Parse(sessionID)
+	message := models.LLMMessage{
+		SessionID:  sid,
+		Role:       "assistant",
+		Content:    reply,
+		RawOutput:  reply,
+		LatencyMs:  latencyMs,
+		TokenCount: estimateWordCount(reply),
+	}
+	if err := h.DB.Create(&message).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "mesaj kaydedilemedi"})
+		return
+	}
+
+	score, err := h.scoreAssistantMessage(message)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "puanlama başarısız oldu"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": message, "score": score})
+}
+
+func estimateWordCount(text string) int {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return 0
+	}
+	return len(words)
 }
 
 // ---------- 16) GET /api/llm/sessions/:id/messages ----------
