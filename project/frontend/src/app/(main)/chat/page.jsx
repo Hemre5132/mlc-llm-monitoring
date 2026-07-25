@@ -1,21 +1,23 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   createSession,
-  generateResponse,
+  generateChat,
   getMessages,
-  initLLMEngine,
-  isModelLoading,
-  isModelReady,
   logMessage,
-  resetEngine,
 } from "@/services/llm.service";
 
 const SESSION_STORAGE_KEY = "currentSessionId";
 const DEFAULT_ASSISTANT_MESSAGE = {
   role: "assistant",
-  content: "Hi! I am your local AI assistant running directly on your device. How can I help you today?",
+  content: "Hi! I am your AI assistant. How can I help you today?",
+};
+
+const SYSTEM_MESSAGE = {
+  role: "system",
+  content:
+    "You are a highly intelligent and helpful AI assistant. You MUST always respond strictly in English, regardless of the language the user uses to ask the question. Be concise and accurate.",
 };
 
 function estimateTokenCount(text) {
@@ -24,44 +26,15 @@ function estimateTokenCount(text) {
 }
 
 export default function ChatPage() {
-  const [isWebGPUSupported, setIsWebGPUSupported] = useState(null);
-  const [isEngineReady, setIsEngineReady] = useState(false);
-  const [loadingText, setLoadingText] = useState("Model başlatılıyor...");
   const [isGenerating, setIsGenerating] = useState(false);
   const [sessionId, setSessionId] = useState(null);
   const [messages, setMessages] = useState([DEFAULT_ASSISTANT_MESSAGE]);
   const [input, setInput] = useState("");
-  const [deviceError, setDeviceError] = useState(null); // device lost hatası UI'ı
-
-  // Engine init'inin bir kez çalışmasını garanti altına almak için ref guard
-  const engineInitStarted = useRef(false);
-
-  // Device lost sonrası modeli yeniden yükle
-  const reloadModel = async () => {
-    setDeviceError(null);
-    setLoadingText("Model yeniden başlatılıyor...");
-    setIsEngineReady(false);
-    engineInitStarted.current = false;
-    resetEngine();
-
-    // Kısa bir bekleme — GPU'nun toparlanmasına izin ver
-    await new Promise((r) => setTimeout(r, 1500));
-
-    try {
-      await initLLMEngine((progress) => {
-        setLoadingText(progress.text);
-      });
-      setIsEngineReady(true);
-      setLoadingText("✓ Model ready");
-    } catch (error) {
-      console.error("Yeniden yükleme hatası:", error);
-      setDeviceError("Model yeniden yüklenemedi. Sayfayı tazelemeyi deneyin.");
-    }
-  };
+  const [error, setError] = useState(null);
 
   const startNewChat = async () => {
     try {
-      const session = await createSession({ model_name: "gemma-2b-it-q4f16_1-MLC" });
+      const session = await createSession({ model_name: "gemma2:2b" });
       const nextSessionId = session.id || session.ID;
 
       if (typeof window !== "undefined") {
@@ -71,33 +44,13 @@ export default function ChatPage() {
       setSessionId(nextSessionId);
       setMessages([DEFAULT_ASSISTANT_MESSAGE]);
       setInput("");
-    } catch (error) {
-      console.error("Yeni sohbet başlatılamadı:", error);
+      setError(null);
+    } catch (err) {
+      console.error("Yeni sohbet başlatılamadı:", err);
     }
   };
 
   useEffect(() => {
-    // --- WebGPU ve Engine kontrolü (tek effect, tek kaynak) ---
-    if ("gpu" in navigator) {
-      setIsWebGPUSupported(true);
-    } else {
-      setIsWebGPUSupported(false);
-      return;
-    }
-
-    // --- Eğer engine singleton'ı zaten yüklüyse state'i hemen güncelle ---
-    if (isModelReady()) {
-      setIsEngineReady(true);
-      setLoadingText("✓ Model ready");
-      engineInitStarted.current = true;
-    }
-
-    // --- Eğer yükleme halihazırda devam ediyorsa bekleyen promise'ı yakala ---
-    if (isModelLoading() && !engineInitStarted.current) {
-      engineInitStarted.current = true;
-    }
-
-    // --- Session yönetimi ---
     const initChat = async () => {
       try {
         const storedSessionId =
@@ -113,7 +66,7 @@ export default function ChatPage() {
           return;
         }
 
-        const session = await createSession({ model_name: "gemma-2b-it-q4f16_1-MLC" });
+        const session = await createSession({ model_name: "gemma2:2b" });
         const sId = session.id || session.ID;
 
         if (typeof window !== "undefined") {
@@ -121,41 +74,25 @@ export default function ChatPage() {
         }
 
         setSessionId(sId);
-      } catch (error) {
-        console.error("Oturum başlatılamadı:", error);
+      } catch (err) {
+        console.error("Oturum başlatılamadı:", err);
+        // Eski session silinmiş olabilir, localStorage'ı temizle
+        if (typeof window !== "undefined") {
+          window.localStorage.removeItem(SESSION_STORAGE_KEY);
+        }
       }
     };
 
     initChat();
-
-    // --- Engine başlatma (ref guard ile) ---
-    if (!engineInitStarted.current) {
-      engineInitStarted.current = true;
-
-      const loadModel = async () => {
-        try {
-          await initLLMEngine((progress) => {
-            setLoadingText(progress.text);
-          });
-          setIsEngineReady(true);
-          setLoadingText("✓ Model ready");
-        } catch (error) {
-          console.error(error);
-          setLoadingText("Model yüklenirken bir hata oluştu.");
-        }
-      };
-
-      loadModel();
-    }
-  }, []); // ← boş dependency: sadece mount'ta bir kez çalışır
+  }, []);
 
   async function handleSend() {
-    if (!input.trim() || !isEngineReady || isGenerating) return;
+    if (!input.trim() || isGenerating || !sessionId) return;
 
     const userText = input;
-    const startedAt = Date.now();
     setInput("");
     setIsGenerating(true);
+    setError(null);
 
     const newMessages = [
       ...messages,
@@ -164,56 +101,35 @@ export default function ChatPage() {
     ];
     setMessages(newMessages);
 
-    if (sessionId) {
-      try {
-        await logMessage(sessionId, {
-          role: "user",
-          content: userText,
-          latency_ms: 0,
-          token_count: estimateTokenCount(userText),
-        });
-      } catch (error) {
-        console.error("Kullanıcı mesajı kaydedilemedi", error);
-      }
+    try {
+      await logMessage(sessionId, {
+        role: "user",
+        content: userText,
+        latency_ms: 0,
+        token_count: estimateTokenCount(userText),
+      });
+    } catch (err) {
+      console.error("Kullanıcı mesajı kaydedilemedi", err);
     }
 
     try {
-      const messagesForModel = newMessages.slice(0, -1);
-      const finalReply = await generateResponse(messagesForModel, (currentText) => {
-        setMessages((prev) => {
-          const updatedMessages = [...prev];
-          updatedMessages[updatedMessages.length - 1].content = currentText;
-          return updatedMessages;
-        });
+      const conversation = [
+        SYSTEM_MESSAGE,
+        ...newMessages.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
+      ];
+
+      const result = await generateChat(sessionId, conversation);
+      const reply = result?.message?.content || "Yanıt alınamadı.";
+
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1].content = reply;
+        return updated;
       });
-
-      if (sessionId) {
-        try {
-          await logMessage(sessionId, {
-            role: "assistant",
-            content: finalReply,
-            raw_output: finalReply,
-            latency_ms: Date.now() - startedAt,
-            token_count: estimateTokenCount(finalReply),
-          });
-        } catch (error) {
-          console.error("Asistan mesajı kaydedilemedi", error);
-        }
-      }
-    } catch (error) {
-      console.error("Yanıt üretilirken hata:", error);
-
-      // Device lost hatası mı kontrol et
-      const isDeviceLost = 
-        error?.message?.includes("Device was lost") || 
-        error?.message?.includes("GPU") ||
-        error?.toString?.()?.includes("Device was lost");
-
-      if (isDeviceLost) {
-        setIsEngineReady(false);
-        setDeviceError("GPU belleği tükendi. Model sıfırlandı. Lütfen 'Modeli Yeniden Yükle' butonuna tıklayın.");
-      }
-
+    } catch (err) {
+      console.error("Yanıt üretilirken hata:", err);
+      const backendMsg = err?.response?.data?.error || "Ollama bağlantı hatası";
+      setError(backendMsg);
       setMessages((prev) => {
         const updated = [...prev];
         updated[updated.length - 1].content = "Yanıt oluşturulurken bir hata meydana geldi.";
@@ -224,34 +140,11 @@ export default function ChatPage() {
     }
   }
 
-  if (isWebGPUSupported === null) {
-    return (
-      <div className="flex h-[80vh] items-center justify-center">
-        <p className="text-gray-500 animate-pulse">Sistem gereksinimleri kontrol ediliyor...</p>
-      </div>
-    );
-  }
-
-  if (isWebGPUSupported === false) {
-    return (
-      <div className="mx-auto flex h-[80vh] max-w-2xl flex-col items-center justify-center p-6 text-center">
-        <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-red-700 shadow-sm">
-          <h3 className="mb-2 text-xl font-bold">WebGPU Desteklenmiyor</h3>
-          <p className="text-sm">Tarayıcınız yerel AI modelini desteklemiyor.</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="mx-auto flex h-[80vh] max-w-2xl flex-col rounded-xl border bg-white shadow-sm">
       <div className="flex items-center justify-between border-b p-3">
-        <div
-          className={`flex-1 text-center text-xs font-medium ${
-            isEngineReady ? "text-green-700" : "text-blue-700 animate-pulse"
-          }`}
-        >
-          {isEngineReady ? "✓ Local AI Engine Ready" : loadingText}
+        <div className="flex-1 text-center text-xs font-medium text-green-700">
+          {isGenerating ? "Yanıt üretiliyor..." : "✓ Bağlı"}
         </div>
         <button
           onClick={startNewChat}
@@ -261,16 +154,9 @@ export default function ChatPage() {
         </button>
       </div>
 
-      {/* Device lost hatası banner'ı */}
-      {deviceError && (
+      {error && (
         <div className="mx-4 mt-2 rounded-lg border border-orange-300 bg-orange-50 p-3 text-center text-sm text-orange-800">
-          <p className="mb-2">{deviceError}</p>
-          <button
-            onClick={reloadModel}
-            className="rounded-md bg-orange-500 px-4 py-1.5 text-xs font-semibold text-white hover:bg-orange-600 transition-colors"
-          >
-            🔄 Modeli Yeniden Yükle
-          </button>
+          {error}
         </div>
       )}
 
@@ -295,12 +181,12 @@ export default function ChatPage() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleSend()}
-          placeholder={isEngineReady ? "Type your message..." : "Loading model, please wait..."}
-          disabled={!isEngineReady || isGenerating}
+          placeholder="Type your message..."
+          disabled={isGenerating}
         />
         <button
           onClick={handleSend}
-          disabled={!isEngineReady || isGenerating}
+          disabled={isGenerating}
           className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:bg-indigo-400 disabled:cursor-not-allowed"
         >
           {isGenerating ? "Writing..." : "Send"}

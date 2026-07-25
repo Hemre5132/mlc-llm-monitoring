@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"math"
 	"net/http"
 	"strings"
@@ -199,11 +200,14 @@ func (h *LLMHandler) GenerateChat(c *gin.Context) {
 	}
 
 	startedAt := time.Now()
+	log.Printf("GenerateChat[%s]: %d messages, sending to Ollama", sessionID, len(req.Messages))
 	reply, err := h.Ollama.Chat(req.Messages)
 	if err != nil {
+		log.Printf("GenerateChat[%s]: Ollama error: %v", sessionID, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "model yanıt üretemedi: " + err.Error()})
 		return
 	}
+	log.Printf("GenerateChat[%s]: Ollama replied in %v", sessionID, time.Since(startedAt))
 	latencyMs := int(time.Since(startedAt).Milliseconds())
 
 	sid, _ := uuid.Parse(sessionID)
