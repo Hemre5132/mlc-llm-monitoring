@@ -1,3 +1,5 @@
+// internal/metrics/metrics.go — tüm Prometheus metrik tanımları
+// Bu dosyadaki her metrik adı "mlcmon_" önekiyle başlar.
 package metrics
 
 import (
@@ -5,103 +7,217 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-var (
-	// HTTP İsteği Sayaçları
-	HTTPRequestsTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "http_requests_total",
-			Help: "Toplam HTTP istek sayısı",
-		},
-		[]string{"method", "endpoint", "status"},
-	)
+// ============================================================
+// A. HTTP katmanı — middleware/metrics.go tarafından kullanılır
+// ============================================================
 
-	// HTTP İstek Süresi (Histogram)
-	HTTPRequestDuration = promauto.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "http_request_duration_seconds",
-			Help:    "HTTP istek yanıt süresi",
-			Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
-		},
-		[]string{"method", "endpoint"},
-	)
+// HTTPRequestsTotal — her HTTP isteğinde artar; method, path, status etiketleriyle.
+var HTTPRequestsTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "mlcmon_http_requests_total",
+		Help: "Toplam HTTP istek sayısı (method, path, status)",
+	},
+	[]string{"method", "path", "status"},
+)
 
-	// LLM Model Latency (Ollama yanıt süresi)
-	LLMLatency = promauto.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "llm_generate_duration_seconds",
-			Help:    "Ollama model yanıt süresi (saniye)",
-			Buckets: []float64{.1, .5, 1, 2, 5, 10, 20, 30},
-		},
-		[]string{"model"},
-	)
+// HTTPRequestDurationSeconds — istek süresi histogramı; method, path etiketleriyle.
+var HTTPRequestDurationSeconds = promauto.NewHistogramVec(
+	prometheus.HistogramOpts{
+		Name:    "mlcmon_http_request_duration_seconds",
+		Help:    "HTTP istek yanıt süresi (saniye)",
+		Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
+	},
+	[]string{"method", "path"},
+)
 
-	// LLM Token Count
-	LLMTokenCount = promauto.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "llm_tokens_generated",
-			Help:    "Model tarafından üretilen token sayısı",
-			Buckets: []float64{10, 50, 100, 200, 500, 1000, 2000},
-		},
-		[]string{"model"},
-	)
+// HTTPRequestsInFlight — anlık işlenmekte olan istek sayısı (gauge).
+var HTTPRequestsInFlight = promauto.NewGauge(
+	prometheus.GaugeOpts{
+		Name: "mlcmon_http_requests_in_flight",
+		Help: "Anlık işlenmekte olan HTTP istek sayısı",
+	},
+)
 
-	// Hata Sayaçları
-	ErrorsTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "errors_total",
-			Help: "Toplam hata sayısı",
-		},
-		[]string{"type", "endpoint"},
-	)
+// HTTPResponseSizeBytes — yanıt boyutu histogramı; method, path etiketleriyle.
+var HTTPResponseSizeBytes = promauto.NewHistogramVec(
+	prometheus.HistogramOpts{
+		Name:    "mlcmon_http_response_size_bytes",
+		Help:    "HTTP yanıt boyutu (bayt)",
+		Buckets: prometheus.ExponentialBuckets(64, 2, 12), // 64B – 256KB
+	},
+	[]string{"method", "path"},
+)
 
-	// Veritabanı Işlemleri
-	DBOperationDuration = promauto.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "db_operation_duration_seconds",
-			Help:    "Veritabanı işlem süresi",
-			Buckets: []float64{.001, .01, .05, .1, .5, 1},
-		},
-		[]string{"operation"},
-	)
+// ============================================================
+// B. Auth domaini — handlers/auth.go ve middleware/auth.go
+// ============================================================
 
-	// Aktif Oturumlar
-	ActiveSessions = promauto.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "llm_active_sessions",
-			Help: "Aktif LLM oturum sayısı",
-		},
-	)
+// AuthLoginAttemptsTotal — giriş denemeleri; result: success|invalid_credentials|user_not_found
+var AuthLoginAttemptsTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "mlcmon_auth_login_attempts_total",
+		Help: "Giriş denemesi sayısı (result)",
+	},
+	[]string{"result"},
+)
 
-	// Online Kullanıcı Sayısı
-	ActiveUsers = promauto.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "llm_active_users",
-			Help: "Anlık online kullanıcı sayısı",
-		},
-	)
+// AuthTokenRefreshTotal — token yenileme; result: success|invalid_token
+var AuthTokenRefreshTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "mlcmon_auth_token_refresh_total",
+		Help: "Token yenileme sayısı (result)",
+	},
+	[]string{"result"},
+)
 
-	// Login Sayacı
-	LoginsTotal = promauto.NewCounter(
-		prometheus.CounterOpts{
-			Name: "auth_logins_total",
-			Help: "Toplam başarılı giriş sayısı",
-		},
-	)
+// AuthRegistrationsTotal — kayıt denemeleri; result: success|email_exists
+var AuthRegistrationsTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "mlcmon_auth_registrations_total",
+		Help: "Kayıt denemesi sayısı (result)",
+	},
+	[]string{"result"},
+)
 
-	// Register Sayacı
-	RegistersTotal = promauto.NewCounter(
-		prometheus.CounterOpts{
-			Name: "auth_registers_total",
-			Help: "Toplam kayıt sayısı",
-		},
-	)
+// AuthPasswordResetRequestedTotal — şifre sıfırlama talep sayısı.
+var AuthPasswordResetRequestedTotal = promauto.NewCounter(
+	prometheus.CounterOpts{
+		Name: "mlcmon_auth_password_reset_requested_total",
+		Help: "Şifre sıfırlama talep sayısı",
+	},
+)
 
-	// AI Generate Sayacı
-	AICallsTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "llm_calls_total",
-			Help: "Toplam AI model çağrı sayısı",
-		},
-		[]string{"model"},
-	)
+// AuthPasswordResetCompletedTotal — şifre sıfırlama tamamlama; result: success|invalid_or_expired_token
+var AuthPasswordResetCompletedTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "mlcmon_auth_password_reset_completed_total",
+		Help: "Şifre sıfırlama tamamlama sayısı (result)",
+	},
+	[]string{"result"},
+)
+
+// AuthEmailVerificationTotal — email doğrulama; result: success|invalid_token
+var AuthEmailVerificationTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "mlcmon_auth_email_verification_total",
+		Help: "Email doğrulama sayısı (result)",
+	},
+	[]string{"result"},
+)
+
+// AuthUnauthorizedTotal — yetkisiz erişim; reason: missing_header|invalid_token|wrong_token_type
+var AuthUnauthorizedTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "mlcmon_auth_unauthorized_total",
+		Help: "Yetkisiz erişim sayısı (reason)",
+	},
+	[]string{"reason"},
+)
+
+// ============================================================
+// C. Veritabanı katmanı — database.go ve handler'lardaki GORM çağrıları
+// ============================================================
+
+// DBQueryDurationSeconds — sorgu süresi histogramı; handler etiketiyle.
+var DBQueryDurationSeconds = promauto.NewHistogramVec(
+	prometheus.HistogramOpts{
+		Name:    "mlcmon_db_query_duration_seconds",
+		Help:    "Veritabanı sorgu süresi (saniye, handler bazında)",
+		Buckets: []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5},
+	},
+	[]string{"handler"},
+)
+
+// DBPoolOpenConnections — açık bağlantı sayısı (gauge).
+var DBPoolOpenConnections = promauto.NewGauge(
+	prometheus.GaugeOpts{
+		Name: "mlcmon_db_pool_open_connections",
+		Help: "Veritabanı havuzundaki açık bağlantı sayısı",
+	},
+)
+
+// DBPoolInUse — kullanımdaki bağlantı sayısı (gauge).
+var DBPoolInUse = promauto.NewGauge(
+	prometheus.GaugeOpts{
+		Name: "mlcmon_db_pool_in_use",
+		Help: "Veritabanı havuzundaki kullanımdaki bağlantı sayısı",
+	},
+)
+
+// DBPoolIdle — boşta bekleyen bağlantı sayısı (gauge).
+var DBPoolIdle = promauto.NewGauge(
+	prometheus.GaugeOpts{
+		Name: "mlcmon_db_pool_idle",
+		Help: "Veritabanı havuzundaki boş bağlantı sayısı",
+	},
+)
+
+// DBUp — veritabanı erişilebilir mi (1/0) (gauge).
+var DBUp = promauto.NewGauge(
+	prometheus.GaugeOpts{
+		Name: "mlcmon_db_up",
+		Help: "Veritabanı erişilebilirlik durumu (1=erişilebilir, 0=değil)",
+	},
+)
+
+// ============================================================
+// D. Core product (Deci.Scoring / LLM) — handlers/llm.go
+// ============================================================
+
+// LLMMessagesLoggedTotal — kaydedilen mesaj sayısı; role: user|assistant
+var LLMMessagesLoggedTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "mlcmon_llm_messages_logged_total",
+		Help: "Kaydedilen LLM mesaj sayısı (role bazında)",
+	},
+	[]string{"role"},
+)
+
+// LLMSessionsCreatedTotal — oluşturulan oturum sayısı.
+var LLMSessionsCreatedTotal = promauto.NewCounter(
+	prometheus.CounterOpts{
+		Name: "mlcmon_llm_sessions_created_total",
+		Help: "Oluşturulan LLM oturum sayısı",
+	},
+)
+
+// LLMScoreValue — skor değeri histogramı; criterion: overall|coherence|safety|accuracy|length|response_quality
+var LLMScoreValue = promauto.NewHistogramVec(
+	prometheus.HistogramOpts{
+		Name:    "mlcmon_llm_score_value",
+		Help:    "LLM skor değeri dağılımı (criterion bazında)",
+		Buckets: []float64{10, 20, 30, 40, 50, 60, 70, 80, 90, 100},
+	},
+	[]string{"criterion"},
+)
+
+// LLMScoreComputationDurationSeconds — skor hesaplama süresi histogramı.
+var LLMScoreComputationDurationSeconds = promauto.NewHistogram(
+	prometheus.HistogramOpts{
+		Name:    "mlcmon_llm_score_computation_duration_seconds",
+		Help:    "Skor hesaplama süresi (saniye)",
+		Buckets: []float64{.001, .005, .01, .025, .05, .1, .25, .5},
+	},
+)
+
+// LLMBackfillMessagesTotal — backfill işlemi sonucu; result: success|failure
+var LLMBackfillMessagesTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "mlcmon_llm_backfill_messages_total",
+		Help: "Backfill edilen mesaj sayısı (result bazında)",
+	},
+	[]string{"result"},
+)
+
+// ============================================================
+// E. Güvenlik sinyalleri — middleware/cors.go
+// ============================================================
+
+// CORSRejectedTotal — reddedilen CORS istekleri; origin: mismatched|matched
+var CORSRejectedTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "mlcmon_cors_rejected_total",
+		Help: "CORS tarafından reddedilen istek sayısı (origin durumu)",
+	},
+	[]string{"origin"},
 )
