@@ -2,15 +2,22 @@
   "title": "MLC-LLM Monitoring",
   "uid": "mlc-llm-monitoring",
   "version": 1,
+  "timezone": "browser",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "panels": [
     {
-      "title": "Login Sayısı (son 1 saat)",
+      "id": 1,
+      "title": "Toplam HTTP İsteği (son 1 saat)",
       "type": "stat",
-      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 0 },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "increase(auth_logins_total[1h])",
-          "legendFormat": "Login"
+          "expr": "sum(increase(mlcmon_http_requests_total[1h]))",
+          "legendFormat": "HTTP İstekleri"
         }
       ],
       "fieldConfig": {
@@ -21,13 +28,15 @@
       }
     },
     {
-      "title": "Register Sayısı (son 1 saat)",
+      "id": 2,
+      "title": "İşlenmekte Olan İstekler",
       "type": "stat",
-      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 0 },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "increase(auth_registers_total[1h])",
-          "legendFormat": "Register"
+          "expr": "mlcmon_http_requests_in_flight",
+          "legendFormat": "In Flight"
         }
       ],
       "fieldConfig": {
@@ -38,13 +47,50 @@
       }
     },
     {
-      "title": "AI Analiz Sayısı (son 1 saat)",
+      "id": 3,
+      "title": "Veritabanı Durumu",
       "type": "stat",
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum(increase(llm_calls_total[1h]))",
-          "legendFormat": "AI Calls"
+          "expr": "mlcmon_db_up",
+          "legendFormat": "DB Up"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "DOWN", "color": "red" },
+                "1": { "text": "UP", "color": "green" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Oturum Oluşturma (son 1 saat)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "increase(mlcmon_llm_sessions_created_total[1h])",
+          "legendFormat": "Oturumlar"
         }
       ],
       "fieldConfig": {
@@ -55,91 +101,191 @@
       }
     },
     {
-      "title": "Online Kullanıcı",
-      "type": "stat",
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 },
+      "id": 5,
+      "title": "HTTP Gecikme p95 (path bazında, son 5 dk)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "llm_active_users",
-          "legendFormat": "Online"
+          "expr": "histogram_quantile(0.95, sum(rate(mlcmon_http_request_duration_seconds_bucket[5m])) by (le, path))",
+          "legendFormat": "{{path}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "spanNulls": false }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "HTTP İstek Hızı (status bazında, son 5 dk)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(mlcmon_http_requests_total[5m])) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rps",
+          "custom": { "spanNulls": false }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Giriş Denemeleri (sonuç bazında, son 5 dk)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(mlcmon_auth_login_attempts_total[5m])) by (result)",
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rps",
+          "custom": { "spanNulls": false }
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Yetkisiz Erişimler (neden bazında, son 5 dk)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(mlcmon_auth_unauthorized_total[5m])) by (reason)",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rps",
+          "custom": { "spanNulls": false }
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "LLM Skor Dağılımı — overall (medyan ve p10, son 5 dk)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum(rate(mlcmon_llm_score_value_bucket{criterion=\"overall\"}[5m])) by (le))",
+          "legendFormat": "Medyan (p50)"
+        },
+        {
+          "expr": "histogram_quantile(0.1, sum(rate(mlcmon_llm_score_value_bucket{criterion=\"overall\"}[5m])) by (le))",
+          "legendFormat": "p10"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": { "spanNulls": false }
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "LLM Skor Dağılımı — kriter bazında medyan (son 5 dk)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum(rate(mlcmon_llm_score_value_bucket[5m])) by (le, criterion))",
+          "legendFormat": "{{criterion}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": { "spanNulls": false }
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Mesaj Günlükleme Hızı (rol bazında, son 5 dk)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 30 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(mlcmon_llm_messages_logged_total[5m])) by (role)",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rps",
+          "custom": { "spanNulls": false }
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Veritabanı Bağlantı Havuzu (son 5 dk)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 38 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "mlcmon_db_pool_open_connections",
+          "legendFormat": "Açık"
+        },
+        {
+          "expr": "mlcmon_db_pool_in_use",
+          "legendFormat": "Kullanımda"
+        },
+        {
+          "expr": "mlcmon_db_pool_idle",
+          "legendFormat": "Boşta"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "color": { "mode": "orange" }
+          "custom": { "spanNulls": false }
         }
       }
     },
     {
-      "title": "API Response Süresi (p95, son 5 dk)",
-      "type": "graph",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 13,
+      "title": "Sorgu Süresi p95 (handler bazında, son 5 dk)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 38 },
+      "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
-          "legendFormat": "p95"
+          "expr": "histogram_quantile(0.95, sum(rate(mlcmon_db_query_duration_seconds_bucket[5m])) by (le, handler))",
+          "legendFormat": "{{handler}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s"
-        }
-      }
-    },
-    {
-      "title": "HTTP İstek Sayısı (rate/sn)",
-      "type": "graph",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-      "targets": [
-        {
-          "expr": "rate(http_requests_total[5m])",
-          "legendFormat": "{{method}} {{endpoint}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "rps"
-        }
-      }
-    },
-    {
-      "title": "LLM Yanıt Süresi (Ortalama, son 5 dk)",
-      "type": "graph",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-      "targets": [
-        {
-          "expr": "rate(llm_generate_duration_seconds_sum[5m]) / rate(llm_generate_duration_seconds_count[5m])",
-          "legendFormat": "{{model}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s"
-        }
-      }
-    },
-    {
-      "title": "Hata Sayısı (son 1 saat)",
-      "type": "graph",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
-      "targets": [
-        {
-          "expr": "increase(errors_total[1h])",
-          "legendFormat": "{{type}} - {{endpoint}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": { "mode": "red" }
+          "unit": "s",
+          "custom": { "spanNulls": false }
         }
       }
     }
-  ],
-  "time": {
-    "from": "now-1h",
-    "to": "now"
-  },
-  "timezone": "browser"
+  ]
 }
