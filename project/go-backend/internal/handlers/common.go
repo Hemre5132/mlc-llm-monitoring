@@ -2,6 +2,9 @@ package handlers
 
 import (
 	"net/http"
+	"time"
+
+	"masterfabric-backend/internal/metrics"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -56,19 +59,27 @@ func (h *CommonHandler) DashboardStats(c *gin.Context) {
 	var sessionCount, messageCount, scoredMessages int64
 	var avgScore float64
 
-	if err := h.DB.Table("llm_sessions").Where("user_id = ?", uid).Count(&sessionCount).Error; err != nil {
+	if err := dbQueryDuration("dashboard_stats", func() error {
+		return h.DB.Table("llm_sessions").Where("user_id = ?", uid).Count(&sessionCount).Error
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "oturum istatistikleri alınamadı"})
 		return
 	}
-	if err := h.DB.Table("llm_messages").Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").Where("llm_sessions.user_id = ?", uid).Count(&messageCount).Error; err != nil {
+	if err := dbQueryDuration("dashboard_stats", func() error {
+		return h.DB.Table("llm_messages").Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").Where("llm_sessions.user_id = ?", uid).Count(&messageCount).Error
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "mesaj istatistikleri alınamadı"})
 		return
 	}
-	if err := h.DB.Table("llm_scores").Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").Where("llm_sessions.user_id = ?", uid).Select("COALESCE(AVG(llm_scores.score), 0)").Scan(&avgScore).Error; err != nil {
+	if err := dbQueryDuration("dashboard_stats", func() error {
+		return h.DB.Table("llm_scores").Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").Where("llm_sessions.user_id = ?", uid).Select("COALESCE(AVG(llm_scores.score), 0)").Scan(&avgScore).Error
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "skor istatistikleri alınamadı"})
 		return
 	}
-	if err := h.DB.Table("llm_scores").Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").Where("llm_sessions.user_id = ?", uid).Count(&scoredMessages).Error; err != nil {
+	if err := dbQueryDuration("dashboard_stats", func() error {
+		return h.DB.Table("llm_scores").Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").Where("llm_sessions.user_id = ?", uid).Count(&scoredMessages).Error
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "skor sayısı alınamadı"})
 		return
 	}
@@ -81,14 +92,16 @@ func (h *CommonHandler) DashboardStats(c *gin.Context) {
 		ScoredMessages int64   `json:"scored_messages"`
 	}
 
-	err := h.DB.Table("llm_sessions as s").
-		Select("s.id, s.title, s.model_name, COALESCE(AVG(ls.score), 0) as average_score, COUNT(ls.id) as scored_messages").
-		Where("s.user_id = ?", uid).
-		Joins("LEFT JOIN llm_messages as m ON m.session_id = s.id").
-		Joins("LEFT JOIN llm_scores as ls ON ls.message_id = m.id").
-		Group("s.id, s.title, s.model_name, s.created_at").
-		Order("s.created_at desc").
-		Scan(&sessions).Error
+	err := dbQueryDuration("dashboard_stats", func() error {
+		return h.DB.Table("llm_sessions as s").
+			Select("s.id, s.title, s.model_name, COALESCE(AVG(ls.score), 0) as average_score, COUNT(ls.id) as scored_messages").
+			Where("s.user_id = ?", uid).
+			Joins("LEFT JOIN llm_messages as m ON m.session_id = s.id").
+			Joins("LEFT JOIN llm_scores as ls ON ls.message_id = m.id").
+			Group("s.id, s.title, s.model_name, s.created_at").
+			Order("s.created_at desc").
+			Scan(&sessions).Error
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "oturum skorları alınamadı"})
 		return
@@ -112,24 +125,30 @@ func (h *CommonHandler) MyStats(c *gin.Context) {
 	var sessionCount, scoredMessages int64
 	var avgScore float64
 
-	if err := h.DB.Table("llm_sessions").Where("user_id = ?", userID).Count(&sessionCount).Error; err != nil {
+	if err := dbQueryDuration("my_stats", func() error {
+		return h.DB.Table("llm_sessions").Where("user_id = ?", userID).Count(&sessionCount).Error
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "kişisel oturum istatistikleri alınamadı"})
 		return
 	}
-	if err := h.DB.Table("llm_scores").
-		Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").
-		Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").
-		Where("llm_sessions.user_id = ?", userID).
-		Select("COALESCE(AVG(llm_scores.score), 0)").
-		Scan(&avgScore).Error; err != nil {
+	if err := dbQueryDuration("my_stats", func() error {
+		return h.DB.Table("llm_scores").
+			Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").
+			Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").
+			Where("llm_sessions.user_id = ?", userID).
+			Select("COALESCE(AVG(llm_scores.score), 0)").
+			Scan(&avgScore).Error
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "kişisel skor istatistikleri alınamadı"})
 		return
 	}
-	if err := h.DB.Table("llm_scores").
-		Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").
-		Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").
-		Where("llm_sessions.user_id = ?", userID).
-		Count(&scoredMessages).Error; err != nil {
+	if err := dbQueryDuration("my_stats", func() error {
+		return h.DB.Table("llm_scores").
+			Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").
+			Joins("JOIN llm_sessions ON llm_sessions.id = llm_messages.session_id").
+			Where("llm_sessions.user_id = ?", userID).
+			Count(&scoredMessages).Error
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "kişisel skor sayısı alınamadı"})
 		return
 	}
@@ -139,4 +158,13 @@ func (h *CommonHandler) MyStats(c *gin.Context) {
 		"average_score":   avgScore,
 		"scored_messages": scoredMessages,
 	})
+}
+
+// dbQueryDuration, bir veritabanı işleminin süresini ölçer ve mlcmon_db_query_duration_seconds
+// histogramına kaydeder. Handler etiketiyle hangi endpoint'in ne kadar sürdüğünü izler.
+func dbQueryDuration(handler string, fn func() error) error {
+	start := time.Now()
+	err := fn()
+	metrics.DBQueryDurationSeconds.WithLabelValues(handler).Observe(time.Since(start).Seconds())
+	return err
 }

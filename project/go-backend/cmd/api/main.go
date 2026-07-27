@@ -17,6 +17,11 @@ func main() {
 	cfg := config.Load()
 	db := database.Connect(cfg.DatabaseURL)
 
+	// Veritabanı havuz istatistik toplayıcısını başlat (15sn aralıklarla
+	// mlcmon_db_pool_open_connections, mlcmon_db_pool_in_use,
+	// mlcmon_db_pool_idle ve mlcmon_db_up gauge'larını günceller).
+	database.StartPoolStatsCollector(db)
+
 	ollamaClient := llmclient.NewOllamaClient(cfg.OllamaURL, cfg.OllamaModel)
 
 	if cfg.Env == "production" {

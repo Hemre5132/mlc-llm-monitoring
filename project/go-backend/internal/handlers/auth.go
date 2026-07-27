@@ -40,6 +40,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 
 	var existing models.User
 	if err := h.DB.Where("email = ?", req.Email).First(&existing).Error; err == nil {
+		metrics.AuthRegistrationsTotal.WithLabelValues("email_exists").Inc()
 		c.JSON(http.StatusConflict, gin.H{"error": "bu email zaten kayıtlı"})
 		return
 	}
@@ -61,7 +62,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	metrics.RegistersTotal.Inc()
+	metrics.AuthRegistrationsTotal.WithLabelValues("success").Inc()
 
 	c.JSON(http.StatusCreated, gin.H{
 		"message":      "kayıt başarılı, email doğrulaması gerekli",
@@ -86,10 +87,12 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	var user models.User
 	if err := h.DB.Where("email = ?", req.Email).First(&user).Error; err != nil {
+		metrics.AuthLoginAttemptsTotal.WithLabelValues("user_not_found").Inc()
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "email veya şifre hatalı"})
 		return
 	}
 	if !utils.CheckPassword(req.Password, user.PasswordHash) {
+		metrics.AuthLoginAttemptsTotal.WithLabelValues("invalid_credentials").Inc()
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "email veya şifre hatalı"})
 		return
 	}
@@ -100,8 +103,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	metrics.LoginsTotal.Inc()
-	metrics.ActiveUsers.Inc()
+	metrics.AuthLoginAttemptsTotal.WithLabelValues("success").Inc()
 
 	c.JSON(http.StatusOK, gin.H{
 		"access_token":  access,
@@ -135,6 +137,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 
 	claims, err := utils.ParseToken(req.RefreshToken, h.Cfg.JWTSecret)
 	if err != nil || claims.Type != utils.RefreshToken {
+		metrics.AuthTokenRefreshTotal.WithLabelValues("invalid_token").Inc()
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "geçersiz refresh token"})
 		return
 	}
@@ -145,6 +148,8 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "token üretilemedi"})
 		return
 	}
+
+	metrics.AuthTokenRefreshTotal.WithLabelValues("success").Inc()
 
 	c.JSON(http.StatusOK, gin.H{"access_token": access})
 }
@@ -172,6 +177,8 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 		// NOT: Burada email gönderim servisi tetiklenir.
 	}
 
+	metrics.AuthPasswordResetRequestedTotal.Inc()
+
 	c.JSON(http.StatusOK, gin.H{"message": "eğer bu email kayıtlıysa sıfırlama linki gönderildi"})
 }
 
@@ -191,10 +198,12 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 
 	var user models.User
 	if err := h.DB.Where("reset_token = ?", req.Token).First(&user).Error; err != nil {
+		metrics.AuthPasswordResetCompletedTotal.WithLabelValues("invalid_or_expired_token").Inc()
 		c.JSON(http.StatusBadRequest, gin.H{"error": "geçersiz token"})
 		return
 	}
 	if user.ResetTokenExp == nil || time.Now().After(*user.ResetTokenExp) {
+		metrics.AuthPasswordResetCompletedTotal.WithLabelValues("invalid_or_expired_token").Inc()
 		c.JSON(http.StatusBadRequest, gin.H{"error": "token süresi dolmuş"})
 		return
 	}
@@ -210,6 +219,8 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 		"reset_token":     "",
 		"reset_token_exp": nil,
 	})
+
+	metrics.AuthPasswordResetCompletedTotal.WithLabelValues("success").Inc()
 
 	c.JSON(http.StatusOK, gin.H{"message": "şifre başarıyla güncellendi"})
 }
@@ -229,6 +240,7 @@ func (h *AuthHandler) VerifyEmail(c *gin.Context) {
 
 	var user models.User
 	if err := h.DB.Where("verify_token = ?", req.Token).First(&user).Error; err != nil {
+		metrics.AuthEmailVerificationTotal.WithLabelValues("invalid_token").Inc()
 		c.JSON(http.StatusBadRequest, gin.H{"error": "geçersiz doğrulama token'ı"})
 		return
 	}
@@ -237,6 +249,8 @@ func (h *AuthHandler) VerifyEmail(c *gin.Context) {
 		"email_verified": true,
 		"verify_token":   "",
 	})
+
+	metrics.AuthEmailVerificationTotal.WithLabelValues("success").Inc()
 
 	c.JSON(http.StatusOK, gin.H{"message": "email doğrulandı"})
 }

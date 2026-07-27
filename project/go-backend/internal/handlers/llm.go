@@ -51,7 +51,7 @@ func (h *LLMHandler) CreateSession(c *gin.Context) {
 		return
 	}
 
-	metrics.ActiveSessions.Inc()
+	metrics.LLMSessionsCreatedTotal.Inc()
 
 	c.JSON(http.StatusCreated, session)
 }
@@ -103,7 +103,6 @@ func (h *LLMHandler) DeleteSession(c *gin.Context) {
 		return
 	}
 
-	metrics.ActiveSessions.Dec()
 	c.JSON(http.StatusOK, gin.H{"message": "oturum ve bağlı tüm veriler başarıyla silindi"})
 }
 
@@ -145,6 +144,9 @@ func (h *LLMHandler) CreateMessage(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "mesaj kaydedilemedi"})
 		return
 	}
+
+	// mlcmon_llm_messages_logged_total — her kaydedilen mesaj için
+	metrics.LLMMessagesLoggedTotal.WithLabelValues(req.Role).Inc()
 
 	var savedScore *models.LLMScore
 	if req.Role == "assistant" {
@@ -191,20 +193,11 @@ func (h *LLMHandler) GenerateChat(c *gin.Context) {
 	reply, err := h.Ollama.Chat(req.Messages)
 	if err != nil {
 		log.Printf("GenerateChat[%s]: Ollama error: %v", sessionID, err)
-		metrics.ErrorsTotal.WithLabelValues("ollama", "/api/llm/sessions/:id/generate").Inc()
 		c.JSON(http.StatusBadGateway, gin.H{"error": "model yanıt üretemedi: " + err.Error()})
 		return
 	}
 	log.Printf("GenerateChat[%s]: Ollama replied in %v", sessionID, time.Since(startedAt))
 	latencyMs := int(time.Since(startedAt).Milliseconds())
-
-	// Prometheus metrikleri
-	modelLabel := session.ModelName
-	if modelLabel == "" {
-		modelLabel = "gemma2:2b"
-	}
-	metrics.LLMLatency.WithLabelValues(modelLabel).Observe(float64(latencyMs) / 1000.0)
-	metrics.AICallsTotal.WithLabelValues(modelLabel).Inc()
 
 	sid, _ := uuid.Parse(sessionID)
 	message := models.LLMMessage{
@@ -220,7 +213,8 @@ func (h *LLMHandler) GenerateChat(c *gin.Context) {
 		return
 	}
 
-	metrics.LLMTokenCount.WithLabelValues(modelLabel).Observe(float64(message.TokenCount))
+	// mlcmon_llm_messages_logged_total — generate sonucu kaydedilen assistant mesajı
+	metrics.LLMMessagesLoggedTotal.WithLabelValues("assistant").Inc()
 
 	score, err := h.scoreAssistantMessage(message)
 	if err != nil {
@@ -346,6 +340,7 @@ func (h *LLMHandler) BackfillScores(c *gin.Context) {
 		h.DB.Table("llm_sessions").Select("id").Where("user_id = ?", userID),
 	).Where("id NOT IN (?)", h.DB.Table("llm_scores").Select("message_id")).
 		Find(&messages).Error; err != nil {
+		metrics.LLMBackfillMessagesTotal.WithLabelValues("failure").Inc()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "eksik skorlar bulunamadı"})
 		return
 	}
@@ -353,11 +348,14 @@ func (h *LLMHandler) BackfillScores(c *gin.Context) {
 	created := 0
 	for _, message := range messages {
 		if _, err := h.scoreAssistantMessage(message); err != nil {
+			metrics.LLMBackfillMessagesTotal.WithLabelValues("failure").Inc()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "eksik skorlar tamamlanamadı"})
 			return
 		}
 		created++
 	}
+
+	metrics.LLMBackfillMessagesTotal.WithLabelValues("success").Inc()
 
 	c.JSON(http.StatusOK, gin.H{"created": created})
 }
@@ -384,7 +382,15 @@ func (h *LLMHandler) scoreAssistantMessage(message models.LLMMessage) (*models.L
 	return &score, nil
 }
 
+// calculateScore, asistan mesajının kalitesini çeşitli kriterlere göre puanlar.
+// Sonuçları mlcmon_llm_score_value histogramına gönderir.
 func (h *LLMHandler) calculateScore(message models.LLMMessage) (models.LLMScore, error) {
+	// Skor hesaplama süresini ölç — bu metrik en değerli ürün metriklerinden biridir
+	calcStart := time.Now()
+	defer func() {
+		metrics.LLMScoreComputationDurationSeconds.Observe(time.Since(calcStart).Seconds())
+	}()
+
 	content := strings.ToLower(strings.TrimSpace(message.Content))
 	rawOutput := strings.ToLower(strings.TrimSpace(message.RawOutput))
 	contentLen := float64(len(content))
@@ -429,6 +435,7 @@ func (h *LLMHandler) calculateScore(message models.LLMMessage) (models.LLMScore,
 		accuracyScore = math.Min(100, accuracyScore+25)
 	}
 
+	// Kriter haritası — her bir kriter için metrik gözlemlenir
 	criteria := map[string]float64{
 		"coherence":        coherenceScore,
 		"safety":           safetyScore,
@@ -438,6 +445,13 @@ func (h *LLMHandler) calculateScore(message models.LLMMessage) (models.LLMScore,
 	}
 
 	overall := (criteria["coherence"] + criteria["safety"] + criteria["accuracy"] + criteria["length"] + criteria["response_quality"]) / 5
+
+	// Her kriter ve overall için skor histogramına kaydet
+	// Bu metrik, zaman içinde skor dağılımının kaymasını görmeyi sağlar
+	for criterion, val := range criteria {
+		metrics.LLMScoreValue.WithLabelValues(criterion).Observe(val)
+	}
+	metrics.LLMScoreValue.WithLabelValues("overall").Observe(overall)
 
 	criteriaJSON, err := json.Marshal(criteria)
 	if err != nil {
