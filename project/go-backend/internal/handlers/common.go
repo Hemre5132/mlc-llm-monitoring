@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -85,11 +86,13 @@ func (h *CommonHandler) DashboardStats(c *gin.Context) {
 	}
 
 	var sessions []struct {
-		ID             string  `json:"id"`
-		Title          string  `json:"title"`
-		ModelName      string  `json:"model_name"`
-		AverageScore   float64 `json:"average_score"`
-		ScoredMessages int64   `json:"scored_messages"`
+		ID               string             `json:"id"`
+		Title            string             `json:"title"`
+		ModelName        string             `json:"model_name"`
+		AverageScore     float64            `json:"average_score"`
+		ScoredMessages   int64              `json:"scored_messages"`
+		CategoryScores   map[string]float64 `json:"category_scores"`
+		RequiresRevision bool               `json:"requires_revision"`
 	}
 
 	err := dbQueryDuration("dashboard_stats", func() error {
@@ -105,6 +108,66 @@ func (h *CommonHandler) DashboardStats(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "oturum skorları alınamadı"})
 		return
+	}
+
+	for i := range sessions {
+		var sessionScores []struct {
+			CategoryScores string `json:"category_scores"`
+		}
+		if err := h.DB.Table("llm_scores").
+			Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").
+			Where("llm_messages.session_id = ?", sessions[i].ID).
+			Select("llm_scores.category_scores").
+			Scan(&sessionScores).Error; err != nil {
+			continue
+		}
+
+		var effectivenessSum, structureSum, safetySum float64
+		var scoreCount int
+		var requiresRevision bool
+		for _, item := range sessionScores {
+			if item.CategoryScores == "" {
+				continue
+			}
+			var categoryScores map[string]float64
+			if err := json.Unmarshal([]byte(item.CategoryScores), &categoryScores); err != nil {
+				continue
+			}
+			effectivenessSum += categoryScores["effectiveness"]
+			structureSum += categoryScores["structure"]
+			safetySum += categoryScores["safety"]
+			scoreCount++
+		}
+
+		if scoreCount > 0 {
+			sessions[i].CategoryScores = map[string]float64{
+				"effectiveness": effectivenessSum / float64(scoreCount),
+				"structure":     structureSum / float64(scoreCount),
+				"safety":        safetySum / float64(scoreCount),
+			}
+		}
+
+		if scoreCount > 0 {
+			var revisionScores []struct {
+				RequiresRevision bool `json:"requires_revision"`
+			}
+			if err := h.DB.Table("llm_scores").
+				Joins("JOIN llm_messages ON llm_messages.id = llm_scores.message_id").
+				Where("llm_messages.session_id = ?", sessions[i].ID).
+				Select("llm_scores.requires_revision").
+				Scan(&revisionScores).Error; err == nil {
+				for _, revisionScore := range revisionScores {
+					if revisionScore.RequiresRevision {
+						requiresRevision = true
+						break
+					}
+				}
+			}
+		}
+
+		if scoreCount > 0 {
+			sessions[i].RequiresRevision = requiresRevision
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{

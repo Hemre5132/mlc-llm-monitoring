@@ -77,6 +77,7 @@ func main() {
 			llmGroup.GET("/sessions/:id/score", llmHandler.GetScores)
 			llmGroup.POST("/scores/backfill", llmHandler.BackfillScores)
 			llmGroup.POST("/sessions/:id/generate", llmHandler.GenerateChat)
+			llmGroup.POST("/sessions/:id/analyze", llmHandler.AnalyzeText)
 		}
 
 		// ---- Common Services [4] ----

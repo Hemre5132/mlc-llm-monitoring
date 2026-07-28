@@ -1,9 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"log"
-	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -11,6 +11,7 @@ import (
 	"masterfabric-backend/internal/llmclient"
 	"masterfabric-backend/internal/metrics"
 	"masterfabric-backend/internal/models"
+	"masterfabric-backend/internal/services"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -159,7 +160,7 @@ func (h *LLMHandler) CreateMessage(c *gin.Context) {
 		var scoreErr error
 		savedScore, scoreErr = h.scoreAssistantMessage(savedMessage)
 		if scoreErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "puanlama başarısız oldu"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "skorlama şu an yapılamadı, tekrar deneyin"})
 			return
 		}
 	}
@@ -218,7 +219,7 @@ func (h *LLMHandler) GenerateChat(c *gin.Context) {
 
 	score, err := h.scoreAssistantMessage(message)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "puanlama başarısız oldu"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "skorlama şu an yapılamadı, tekrar deneyin"})
 		return
 	}
 
@@ -231,6 +232,87 @@ func estimateWordCount(text string) int {
 		return 0
 	}
 	return len(words)
+}
+
+// ---------- POST /api/llm/sessions/:id/analyze ----------
+type analyzeTextRequest struct {
+	Text string `json:"text" binding:"required"`
+}
+
+func (h *LLMHandler) AnalyzeText(c *gin.Context) {
+	userID := c.MustGet("user_id").(uuid.UUID)
+	sessionID := c.Param("id")
+
+	var session models.LLMSession
+	if err := h.DB.Where("id = ? AND user_id = ?", sessionID, userID).First(&session).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "oturum bulunamadı"})
+		return
+	}
+
+	var req analyzeTextRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	result, err := services.ScoreSalesScript(context.Background(), h.Ollama, req.Text)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "analiz şu an yapılamadı, tekrar deneyin"})
+		return
+	}
+
+	// Kullanıcının metnini kaydet
+	sid, _ := uuid.Parse(sessionID)
+	message := models.LLMMessage{
+		SessionID:  sid,
+		Role:       "user",
+		Content:    req.Text,
+		TokenCount: estimateWordCount(req.Text),
+	}
+	if err := h.DB.Create(&message).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "mesaj kaydedilemedi"})
+		return
+	}
+	metrics.LLMMessagesLoggedTotal.WithLabelValues("user").Inc()
+
+	// Skoru kaydet
+	criteria := map[string]float64{
+		"opening_hook":        result.OpeningHook,
+		"discovery":           result.Discovery,
+		"value_proposition":   result.ValueProposition,
+		"objection_handling":  result.ObjectionHandling,
+		"closing_power":       result.ClosingPower,
+		"persuasiveness_tone": result.PersuasivenessTone,
+		"compliance_safety":   result.ComplianceSafety,
+		"personalization":     result.Personalization,
+		"structure_flow":      result.StructureFlow,
+	}
+	for criterion, val := range criteria {
+		metrics.LLMScoreValue.WithLabelValues(criterion).Observe(val)
+	}
+	metrics.LLMScoreValue.WithLabelValues("overall").Observe(result.Overall)
+
+	criteriaJSON, _ := json.Marshal(criteria)
+	categoryScoresJSON, _ := json.Marshal(map[string]float64{
+		"effectiveness": result.Effectiveness,
+		"structure":     result.Structure,
+		"safety":        result.ComplianceSafety,
+	})
+
+	score := models.LLMScore{
+		MessageID:        message.ID,
+		Score:            result.Overall,
+		Criteria:         string(criteriaJSON),
+		Category:         "sales_script",
+		CategoryScores:   string(categoryScoresJSON),
+		RequiresRevision: result.RequiresRevision,
+	}
+	if err := h.DB.Create(&score).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "skor kaydedilemedi"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"result": result, "message_id": message.ID})
 }
 
 // ---------- 16) GET /api/llm/sessions/:id/messages ----------
@@ -282,7 +364,7 @@ func (h *LLMHandler) CreateScore(c *gin.Context) {
 
 	score, err := h.calculateScore(message)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "skorlama şu an yapılamadı, tekrar deneyin"})
 		return
 	}
 
@@ -291,6 +373,9 @@ func (h *LLMHandler) CreateScore(c *gin.Context) {
 	if err == nil {
 		existing.Score = score.Score
 		existing.Criteria = score.Criteria
+		existing.Category = score.Category
+		existing.CategoryScores = score.CategoryScores
+		existing.RequiresRevision = score.RequiresRevision
 		if saveErr := h.DB.Save(&existing).Error; saveErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "skor güncellenemedi"})
 			return
@@ -349,7 +434,7 @@ func (h *LLMHandler) BackfillScores(c *gin.Context) {
 	for _, message := range messages {
 		if _, err := h.scoreAssistantMessage(message); err != nil {
 			metrics.LLMBackfillMessagesTotal.WithLabelValues("failure").Inc()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "eksik skorlar tamamlanamadı"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "skorlama şu an yapılamadı, tekrar deneyin"})
 			return
 		}
 		created++
@@ -382,85 +467,59 @@ func (h *LLMHandler) scoreAssistantMessage(message models.LLMMessage) (*models.L
 	return &score, nil
 }
 
-// calculateScore, asistan mesajının kalitesini çeşitli kriterlere göre puanlar.
+// calculateScore, asistan mesajının kalitesini satış scripti rubriğine göre puanlar.
 // Sonuçları mlcmon_llm_score_value histogramına gönderir.
 func (h *LLMHandler) calculateScore(message models.LLMMessage) (models.LLMScore, error) {
-	// Skor hesaplama süresini ölç — bu metrik en değerli ürün metriklerinden biridir
 	calcStart := time.Now()
 	defer func() {
 		metrics.LLMScoreComputationDurationSeconds.Observe(time.Since(calcStart).Seconds())
 	}()
 
-	content := strings.ToLower(strings.TrimSpace(message.Content))
-	rawOutput := strings.ToLower(strings.TrimSpace(message.RawOutput))
-	contentLen := float64(len(content))
-
-	lengthScore := math.Min(100, contentLen/2)
-
-	var coherenceScore float64
-	if contentLen >= 20 {
-		coherenceScore = math.Min(100, 70+contentLen/13.3)
-	} else {
-		coherenceScore = math.Min(70, 40+contentLen*1.5)
+	if h.Ollama == nil {
+		return models.LLMScore{}, context.DeadlineExceeded
 	}
 
-	responseQuality := 0.0
-	if strings.Contains(content, "?") {
-		responseQuality += 20
-	}
-	if contentLen > 40 {
-		responseQuality += 40
-	}
-	if len(rawOutput) > 0 {
-		responseQuality += 40
-	}
-	if message.LatencyMs > 0 && message.LatencyMs < 5000 {
-		responseQuality += 40
-	}
-	if message.TokenCount > 0 {
-		responseQuality += 20
-	}
-	responseQuality = math.Min(100, responseQuality)
-
-	safetyScore := 100.0
-	if strings.Contains(content, "ignore") || strings.Contains(content, "hack") || strings.Contains(content, "exploit") {
-		safetyScore = 0
+	result, err := services.ScoreSalesScript(context.Background(), h.Ollama, message.Content)
+	if err != nil {
+		return models.LLMScore{}, err
 	}
 
-	accuracyScore := 55.0
-	if contentLen >= 20 {
-		accuracyScore = 75
-	}
-	if len(rawOutput) > 0 {
-		accuracyScore = math.Min(100, accuracyScore+25)
-	}
-
-	// Kriter haritası — her bir kriter için metrik gözlemlenir
 	criteria := map[string]float64{
-		"coherence":        coherenceScore,
-		"safety":           safetyScore,
-		"accuracy":         accuracyScore,
-		"length":           lengthScore,
-		"response_quality": responseQuality,
+		"opening_hook":        result.OpeningHook,
+		"discovery":           result.Discovery,
+		"value_proposition":   result.ValueProposition,
+		"objection_handling":  result.ObjectionHandling,
+		"closing_power":       result.ClosingPower,
+		"persuasiveness_tone": result.PersuasivenessTone,
+		"compliance_safety":   result.ComplianceSafety,
+		"personalization":     result.Personalization,
+		"structure_flow":      result.StructureFlow,
 	}
-
-	overall := (criteria["coherence"] + criteria["safety"] + criteria["accuracy"] + criteria["length"] + criteria["response_quality"]) / 5
-
-	// Her kriter ve overall için skor histogramına kaydet
-	// Bu metrik, zaman içinde skor dağılımının kaymasını görmeyi sağlar
 	for criterion, val := range criteria {
 		metrics.LLMScoreValue.WithLabelValues(criterion).Observe(val)
 	}
-	metrics.LLMScoreValue.WithLabelValues("overall").Observe(overall)
+	metrics.LLMScoreValue.WithLabelValues("overall").Observe(result.Overall)
 
 	criteriaJSON, err := json.Marshal(criteria)
 	if err != nil {
 		return models.LLMScore{}, err
 	}
 
+	categoryScoresJSON, err := json.Marshal(map[string]float64{
+		"effectiveness": result.Effectiveness,
+		"structure":     result.Structure,
+		"safety":        result.ComplianceSafety,
+	})
+	if err != nil {
+		return models.LLMScore{}, err
+	}
+
 	return models.LLMScore{
-		MessageID: message.ID,
-		Score:     math.Round(overall*10) / 10,
-		Criteria:  string(criteriaJSON),
+		MessageID:        message.ID,
+		Score:            result.Overall,
+		Criteria:         string(criteriaJSON),
+		Category:         "sales_script",
+		CategoryScores:   string(categoryScoresJSON),
+		RequiresRevision: result.RequiresRevision,
 	}, nil
 }
