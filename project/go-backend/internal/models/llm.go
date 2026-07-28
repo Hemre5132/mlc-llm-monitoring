@@ -36,9 +36,12 @@ type LLMMessage struct {
 // sonucunu tutar. Criteria alanı, alt kriter kırılımını JSON olarak saklar
 // (örn: {"coherence": 82, "safety": 95, "accuracy": 70}).
 type LLMScore struct {
-	ID        uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	MessageID uuid.UUID `gorm:"type:uuid;uniqueIndex;not null" json:"message_id"`
-	Score     float64   `gorm:"not null" json:"score"` // 0-100 arası genel skor
-	Criteria  string    `gorm:"type:jsonb" json:"criteria"`
-	CreatedAt time.Time `json:"created_at"`
+	ID               uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	MessageID        uuid.UUID `gorm:"type:uuid;uniqueIndex;not null" json:"message_id"`
+	Score            float64   `gorm:"not null" json:"score"` // 0-100 arası genel skor
+	Criteria         string    `gorm:"type:jsonb" json:"criteria"`
+	Category         string    `gorm:"type:text" json:"category"`
+	CategoryScores   string    `gorm:"type:jsonb" json:"category_scores"`
+	RequiresRevision bool      `gorm:"not null;default:false" json:"requires_revision"`
+	CreatedAt        time.Time `json:"created_at"`
 }

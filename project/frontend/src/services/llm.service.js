@@ -34,6 +34,16 @@ export async function generateChat(sessionId, messages) {
   return data;
 }
 
+export async function analyzeText(sessionId, text) {
+  const { data } = await api.post(`/llm/sessions/${sessionId}/analyze`, { text });
+  return data;
+}
+
+export async function getSessionScores(sessionId) {
+  const { data } = await api.get(`/llm/sessions/${sessionId}/score`);
+  return data;
+}
+
 export async function getMessages(sessionId) {
   const { data } = await api.get(`/llm/sessions/${sessionId}/messages`);
 
