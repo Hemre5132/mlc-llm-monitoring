@@ -161,52 +161,44 @@ var DBUp = promauto.NewGauge(
 )
 
 // ============================================================
-// D. Core product (Deci.Scoring / LLM) — handlers/llm.go
+// D. Core product (Daily English Writing Coach) — handlers/writing.go
 // ============================================================
 
-// LLMMessagesLoggedTotal — kaydedilen mesaj sayısı; role: user|assistant
-var LLMMessagesLoggedTotal = promauto.NewCounterVec(
+// WritingEssaysSubmittedTotal — gönderilen essay sayısı.
+var WritingEssaysSubmittedTotal = promauto.NewCounter(
 	prometheus.CounterOpts{
-		Name: "mlcmon_llm_messages_logged_total",
-		Help: "Kaydedilen LLM mesaj sayısı (role bazında)",
-	},
-	[]string{"role"},
-)
-
-// LLMSessionsCreatedTotal — oluşturulan oturum sayısı.
-var LLMSessionsCreatedTotal = promauto.NewCounter(
-	prometheus.CounterOpts{
-		Name: "mlcmon_llm_sessions_created_total",
-		Help: "Oluşturulan LLM oturum sayısı",
+		Name: "mlcmon_writing_essays_submitted_total",
+		Help: "Gönderilen essay sayısı",
 	},
 )
 
-// LLMScoreValue — skor değeri histogramı; criterion: overall|coherence|safety|accuracy|length|response_quality
-var LLMScoreValue = promauto.NewHistogramVec(
+// WritingScoreValue — essay skor değeri histogramı; criterion:
+// overall|task_achievement|coherence_cohesion|grammar_accuracy|vocabulary_range|spelling_mechanics|sentence_structure
+var WritingScoreValue = promauto.NewHistogramVec(
 	prometheus.HistogramOpts{
-		Name:    "mlcmon_llm_score_value",
-		Help:    "LLM skor değeri dağılımı (criterion bazında)",
+		Name:    "mlcmon_writing_score_value",
+		Help:    "Essay skor değeri dağılımı (criterion bazında)",
 		Buckets: []float64{10, 20, 30, 40, 50, 60, 70, 80, 90, 100},
 	},
 	[]string{"criterion"},
 )
 
-// LLMScoreComputationDurationSeconds — skor hesaplama süresi histogramı.
-var LLMScoreComputationDurationSeconds = promauto.NewHistogram(
+// WritingScoreComputationDurationSeconds — essay skor hesaplama süresi histogramı.
+var WritingScoreComputationDurationSeconds = promauto.NewHistogram(
 	prometheus.HistogramOpts{
-		Name:    "mlcmon_llm_score_computation_duration_seconds",
-		Help:    "Skor hesaplama süresi (saniye)",
+		Name:    "mlcmon_writing_score_computation_duration_seconds",
+		Help:    "Essay skor hesaplama süresi (saniye)",
 		Buckets: []float64{.001, .005, .01, .025, .05, .1, .25, .5},
 	},
 )
 
-// LLMBackfillMessagesTotal — backfill işlemi sonucu; result: success|failure
-var LLMBackfillMessagesTotal = promauto.NewCounterVec(
-	prometheus.CounterOpts{
-		Name: "mlcmon_llm_backfill_messages_total",
-		Help: "Backfill edilen mesaj sayısı (result bazında)",
+// WritingEssayWordCount — essay kelime sayısı dağılımı (histogram).
+var WritingEssayWordCount = promauto.NewHistogram(
+	prometheus.HistogramOpts{
+		Name:    "mlcmon_writing_essay_word_count",
+		Help:    "Essay kelime sayısı dağılımı",
+		Buckets: []float64{50, 100, 150, 200, 300, 400, 600, 1000},
 	},
-	[]string{"result"},
 )
 
 // ============================================================
