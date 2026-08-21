@@ -1,20 +1,34 @@
 # MasterFabric Go Backend
 
 MasterFabric Academy agentic AI development programı için geliştirilen backend.
-Gin + GORM (Postgres) + JWT auth ile yazıldı. 22 endpoint içerir (Auth 8,
-Config 2, Web MLC-LLM 8, Common Services 4).
+Gin + GORM (Postgres) + JWT auth ile yazıldı. "Daily English Writing Coach"
+uygulamasının backend'idir: kullanıcılar günün konusu hakkında İngilizce essay
+yazar, Ollama (gemma2:2b) essay'i rubriğe göre puanlar ve hata listesi çıkarır.
 
 ## Klasör yapısı
 
 ```
 cmd/api/main.go              -> giriş noktası, router kurulumu
 internal/config/              -> ortam değişkeni yönetimi
-internal/database/             -> Postgres bağlantısı + auto-migration
-internal/models/               -> User, LLMSession, LLMMessage, LLMScore
-internal/handlers/             -> auth.go, config.go, llm.go, common.go
+internal/database/             -> Postgres bağlantısı + auto-migration + topic seed
+internal/models/               -> User, Topic, Essay, EssayScore
+internal/handlers/             -> auth.go, config.go, topics.go, writing.go, common.go
+internal/services/             -> essay_scoring_prompt.go, scoring.go (Ollama skorlama)
+internal/llmclient/            -> Ollama HTTP client
 internal/middleware/           -> JWT auth middleware, CORS
+internal/metrics/              -> Prometheus metrikleri (mlcmon_writing_*)
 internal/utils/                -> JWT üretme/doğrulama, bcrypt şifreleme
 ```
+
+## API Endpoint'leri
+
+- **Auth**: `/api/auth/*` (register, login, logout, refresh, forgot/reset password, verify-email, me)
+- **Config**: `GET /api/config`
+- **Topics**: `GET /api/topics/daily`, `GET /api/topics/random`, `POST /api/topics/custom`
+- **Essays**: `POST /api/essays`, `GET /api/essays`, `GET /api/essays/:id`
+- **Stats**: `GET /api/stats/dashboard`, `GET /api/stats/me`, `GET /api/stats/streak`
+- **Health**: `GET /api/health`, `GET /api/version`
+- **Metrics**: `GET /metrics` (Prometheus)
 
 ## Yerel kurulum
 
@@ -24,9 +38,7 @@ internal/utils/                -> JWT üretme/doğrulama, bcrypt şifreleme
    ```bash
    cp .env.example .env
    ```
-4. Bağımlılıkları indir (bu adım internet gerektirir, bu sandbox'ta
-   proxy.golang.org'a erişim kısıtlı olduğu için burada çalıştırılamadı —
-   kendi makinende veya Claude Code ortamında çalıştır):
+4. Bağımlılıkları indir:
    ```bash
    go mod tidy
    ```
@@ -53,9 +65,10 @@ internal/utils/                -> JWT üretme/doğrulama, bcrypt şifreleme
 
 ## Notlar
 
-- `internal/handlers/llm.go` içindeki `CreateScore` fonksiyonunda
-  Deci.Scoring için şimdilik placeholder bir hesaplama var (`TODO` ile
-  işaretli) — gerçek skorlama kriterleri ayrı bir adımda eklenecek.
+- Uygulama ilk açılışta `topics` tablosuna 60 sistem konusu ekler
+  (`database.SeedTopics`).
+- Essay skorlama Ollama üzerinden yapılır; `OLLAMA_URL` ve `OLLAMA_MODEL`
+  environment variable'ları ile yapılandırılır.
 - Stateless JWT kullanıldığı için `logout` endpoint'i şu an sadece 200
   döner; gerçek bir token iptali istersen bir refresh-token blacklist
   tablosu eklemek gerekir.

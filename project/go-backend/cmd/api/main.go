@@ -17,6 +17,9 @@ func main() {
 	cfg := config.Load()
 	db := database.Connect(cfg.DatabaseURL)
 
+	// Sistem essay konularını (60 adet) ilk açılışta ekle
+	database.SeedTopics(db)
+
 	// Veritabanı havuz istatistik toplayıcısını başlat (15sn aralıklarla
 	// mlcmon_db_pool_open_connections, mlcmon_db_pool_in_use,
 	// mlcmon_db_pool_idle ve mlcmon_db_up gauge'larını günceller).
@@ -37,7 +40,8 @@ func main() {
 
 	authHandler := handlers.NewAuthHandler(db, cfg)
 	configHandler := handlers.NewConfigHandler(cfg)
-	llmHandler := handlers.NewLLMHandler(db, ollamaClient)
+	topicHandler := handlers.NewTopicHandler(db)
+	essayHandler := handlers.NewEssayHandler(db, ollamaClient)
 	commonHandler := handlers.NewCommonHandler(db)
 
 	auth := middleware.RequireAuth(cfg.JWTSecret)
@@ -57,34 +61,34 @@ func main() {
 			authGroup.GET("/me", auth, authHandler.Me)
 		}
 
-		// ---- Config [2] ----
+		// ---- Config [1] ----
 		configGroup := api.Group("/config")
 		{
 			configGroup.GET("", configHandler.GetConfig)
-			configGroup.GET("/models", configHandler.GetModels)
 		}
 
-		// ---- Web MLC-LLM [8] ----
-		llmGroup := api.Group("/llm", auth)
+		// ---- Topics [3] ----
+		topicsGroup := api.Group("/topics")
 		{
-			llmGroup.POST("/sessions", llmHandler.CreateSession)
-			llmGroup.GET("/sessions", llmHandler.ListSessions)
-			llmGroup.GET("/sessions/:id", llmHandler.GetSession)
-			llmGroup.DELETE("/sessions/:id", llmHandler.DeleteSession)
-			llmGroup.POST("/sessions/:id/messages", llmHandler.CreateMessage)
-			llmGroup.GET("/sessions/:id/messages", llmHandler.ListMessages)
-			llmGroup.POST("/sessions/:id/score", llmHandler.CreateScore)
-			llmGroup.GET("/sessions/:id/score", llmHandler.GetScores)
-			llmGroup.POST("/scores/backfill", llmHandler.BackfillScores)
-			llmGroup.POST("/sessions/:id/generate", llmHandler.GenerateChat)
-			llmGroup.POST("/sessions/:id/analyze", llmHandler.AnalyzeText)
+			topicsGroup.GET("/daily", topicHandler.GetDaily)
+			topicsGroup.GET("/random", topicHandler.GetRandom)
+			topicsGroup.POST("/custom", auth, topicHandler.CreateCustom)
 		}
 
-		// ---- Common Services [4] ----
+		// ---- Essays [3] ----
+		essaysGroup := api.Group("/essays", auth)
+		{
+			essaysGroup.POST("", essayHandler.Create)
+			essaysGroup.GET("", essayHandler.List)
+			essaysGroup.GET("/:id", essayHandler.Get)
+		}
+
+		// ---- Common Services [5] ----
 		api.GET("/health", commonHandler.Health)
 		api.GET("/version", commonHandler.Version)
 		api.GET("/stats/dashboard", auth, commonHandler.DashboardStats)
 		api.GET("/stats/me", auth, commonHandler.MyStats)
+		api.GET("/stats/streak", auth, commonHandler.Streak)
 	}
 
 	log.Printf("sunucu :%s portunda başlatılıyor (env=%s)", cfg.Port, cfg.Env)

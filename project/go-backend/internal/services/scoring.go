@@ -1,49 +1,50 @@
 package services
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"masterfabric-backend/internal/llmclient"
+	"masterfabric-backend/internal/models"
 )
 
-type scoringResponse struct {
-	OpeningHook        float64 `json:"opening_hook"`
-	Discovery          float64 `json:"discovery"`
-	ValueProposition   float64 `json:"value_proposition"`
-	ObjectionHandling  float64 `json:"objection_handling"`
-	ClosingPower       float64 `json:"closing_power"`
-	PersuasivenessTone float64 `json:"persuasiveness_tone"`
-	ComplianceSafety   float64 `json:"compliance_safety"`
-	Personalization    float64 `json:"personalization"`
-	StructureFlow      float64 `json:"structure_flow"`
-	Reasoning          string  `json:"reasoning"`
+// essayScoringResponse, Ollama'dan gelen essay skorlama yanıtının ham şemasıdır.
+type essayScoringResponse struct {
+	TaskAchievement   float64             `json:"task_achievement"`
+	CoherenceCohesion float64             `json:"coherence_cohesion"`
+	GrammarAccuracy   float64             `json:"grammar_accuracy"`
+	VocabularyRange   float64             `json:"vocabulary_range"`
+	SpellingMechanics float64             `json:"spelling_mechanics"`
+	SentenceStructure float64             `json:"sentence_structure"`
+	CEFREstimate      string              `json:"cefr_estimate"`
+	Errors            []models.EssayError `json:"errors"`
+	Strengths         []string            `json:"strengths"`
+	Reasoning         string              `json:"reasoning"`
 }
 
-type ScoreResult struct {
-	OpeningHook        float64 `json:"opening_hook"`
-	Discovery          float64 `json:"discovery"`
-	ValueProposition   float64 `json:"value_proposition"`
-	ObjectionHandling  float64 `json:"objection_handling"`
-	ClosingPower       float64 `json:"closing_power"`
-	PersuasivenessTone float64 `json:"persuasiveness_tone"`
-	ComplianceSafety   float64 `json:"compliance_safety"`
-	Personalization    float64 `json:"personalization"`
-	StructureFlow      float64 `json:"structure_flow"`
-	Reasoning          string  `json:"reasoning"`
-	Effectiveness      float64 `json:"effectiveness"`
-	Structure          float64 `json:"structure"`
-	Overall            float64 `json:"overall"`
-	RequiresRevision   bool    `json:"requires_revision"`
+// EssayScoreResult, bir essay için hesaplanan nihai skor sonucudur.
+type EssayScoreResult struct {
+	OverallScore      float64             `json:"overall_score"`
+	CEFREstimate      string              `json:"cefr_estimate"`
+	TaskAchievement   float64             `json:"task_achievement"`
+	CoherenceCohesion float64             `json:"coherence_cohesion"`
+	GrammarAccuracy   float64             `json:"grammar_accuracy"`
+	VocabularyRange   float64             `json:"vocabulary_range"`
+	SpellingMechanics float64             `json:"spelling_mechanics"`
+	SentenceStructure float64             `json:"sentence_structure"`
+	ErrorList         []models.EssayError `json:"error_list"`
+	Strengths         []string            `json:"strengths"`
+	Reasoning         string              `json:"reasoning"`
 }
 
-func ScoreSalesScript(ctx any, ollamaClient *llmclient.OllamaClient, scriptContent string) (*ScoreResult, error) {
+// ScoreEssay, bir essay'i Ollama'ya gönderir ve rubriğe göre puanlar.
+// User mesajı "Topic: <topicText>\n\nStudent's essay:\n\n<essayContent>" formatındadır.
+func ScoreEssay(ctx any, ollamaClient *llmclient.OllamaClient, essayContent string, topicText string) (*EssayScoreResult, error) {
 	_ = ctx
 	messages := []llmclient.ChatMessage{
-		{Role: "system", Content: salesScoringSystemPrompt},
-		{Role: "user", Content: fmt.Sprintf("Satış scriptini değerlendir:\n\n%s", scriptContent)},
+		{Role: "system", Content: essayScoringSystemPrompt},
+		{Role: "user", Content: fmt.Sprintf("Topic: %s\n\nStudent's essay:\n\n%s", topicText, essayContent)},
 	}
 
 	var lastErr error
@@ -54,9 +55,9 @@ func ScoreSalesScript(ctx any, ollamaClient *llmclient.OllamaClient, scriptConte
 			continue
 		}
 
-		parsed, parseErr := parseScoringResponse(responseText)
+		parsed, parseErr := parseEssayScoringResponse(responseText)
 		if parseErr == nil {
-			return buildScoreResult(*parsed), nil
+			return buildEssayScoreResult(*parsed), nil
 		}
 		lastErr = parseErr
 	}
@@ -64,7 +65,7 @@ func ScoreSalesScript(ctx any, ollamaClient *llmclient.OllamaClient, scriptConte
 	return nil, fmt.Errorf("skorlama şu an yapılamadı, tekrar deneyin: %w", lastErr)
 }
 
-func parseScoringResponse(raw string) (*scoringResponse, error) {
+func parseEssayScoringResponse(raw string) (*essayScoringResponse, error) {
 	clean := strings.TrimSpace(raw)
 	if strings.HasPrefix(clean, "```") {
 		clean = strings.TrimPrefix(clean, "```json")
@@ -73,7 +74,7 @@ func parseScoringResponse(raw string) (*scoringResponse, error) {
 		clean = strings.TrimSpace(clean)
 	}
 
-	var response scoringResponse
+	var response essayScoringResponse
 	if err := json.Unmarshal([]byte(clean), &response); err != nil {
 		return nil, err
 	}
@@ -81,33 +82,34 @@ func parseScoringResponse(raw string) (*scoringResponse, error) {
 	return &response, nil
 }
 
-func buildScoreResult(response scoringResponse) *ScoreResult {
-	effectiveness := (response.OpeningHook + response.ValueProposition + response.ClosingPower + response.PersuasivenessTone) / 4
-	structure := (response.Discovery + response.ObjectionHandling + response.Personalization + response.StructureFlow) / 4
-	overall := effectiveness*0.5 + structure*0.3 + response.ComplianceSafety*0.2
+// buildEssayScoreResult, ham LLM yanıtından nihai sonucu üretir.
+// OverallScore hesabı (ağırlıklı ortalama — ileride tune edilebilir):
+//
+//	overall = task_achievement*0.25 + coherence_cohesion*0.20 + grammar_accuracy*0.20
+//	        + vocabulary_range*0.15 + spelling_mechanics*0.10 + sentence_structure*0.10
+func buildEssayScoreResult(response essayScoringResponse) *EssayScoreResult {
+	overall := response.TaskAchievement*0.25 +
+		response.CoherenceCohesion*0.20 +
+		response.GrammarAccuracy*0.20 +
+		response.VocabularyRange*0.15 +
+		response.SpellingMechanics*0.10 +
+		response.SentenceStructure*0.10
 
-	return &ScoreResult{
-		OpeningHook:        response.OpeningHook,
-		Discovery:          response.Discovery,
-		ValueProposition:   response.ValueProposition,
-		ObjectionHandling:  response.ObjectionHandling,
-		ClosingPower:       response.ClosingPower,
-		PersuasivenessTone: response.PersuasivenessTone,
-		ComplianceSafety:   response.ComplianceSafety,
-		Personalization:    response.Personalization,
-		StructureFlow:      response.StructureFlow,
-		Reasoning:          response.Reasoning,
-		Effectiveness:      roundFloat(effectiveness),
-		Structure:          roundFloat(structure),
-		Overall:            roundFloat(overall),
-		RequiresRevision:   response.ComplianceSafety < 50,
+	return &EssayScoreResult{
+		OverallScore:      roundFloat(overall),
+		CEFREstimate:      response.CEFREstimate,
+		TaskAchievement:   roundFloat(response.TaskAchievement),
+		CoherenceCohesion: roundFloat(response.CoherenceCohesion),
+		GrammarAccuracy:   roundFloat(response.GrammarAccuracy),
+		VocabularyRange:   roundFloat(response.VocabularyRange),
+		SpellingMechanics: roundFloat(response.SpellingMechanics),
+		SentenceStructure: roundFloat(response.SentenceStructure),
+		ErrorList:         response.Errors,
+		Strengths:         response.Strengths,
+		Reasoning:         response.Reasoning,
 	}
 }
 
 func roundFloat(value float64) float64 {
 	return float64(int(value*100+0.5)) / 100
-}
-
-func init() {
-	_ = bytes.Buffer{}
 }

@@ -29,6 +29,9 @@ func Connect(dsn string) *gorm.DB {
 		&models.LLMSession{},
 		&models.LLMMessage{},
 		&models.LLMScore{},
+		&models.Topic{},
+		&models.Essay{},
+		&models.EssayScore{},
 	); err != nil {
 		log.Fatalf("migrasyon başarısız: %v", err)
 	}
